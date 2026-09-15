@@ -106,7 +106,13 @@ python cli.py "活期利率是多少？"
 python -m pytest -q
 ```
 
-测试使用临时 Chroma 目录和哈希向量，不调用外部 LLM。
+测试使用临时 Chroma 目录和哈希向量，不调用外部 LLM。覆盖 PDF/Word 解析。
+
+把制度稿再导出为办公格式：
+
+```bash
+python scripts/export_office_docs.py
+```
 
 ## 可以部署到哪里（不改架构）
 
