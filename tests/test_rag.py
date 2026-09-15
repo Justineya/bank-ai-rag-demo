@@ -154,6 +154,34 @@ def test_upload_and_preview_vectors(tmp_path, monkeypatch):
     assert "夜间大额" in blob
 
 
+def test_uploaded_policy_is_retrievable(tmp_path, monkeypatch):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "base.md").write_text("## 活期\n星河活期年利率 0.20%。\n", encoding="utf-8")
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma_yibao"))
+    monkeypatch.setenv("RAG_DATA_DIR", str(kb))
+    monkeypatch.setenv("RAG_UPLOAD_DIR", str(kb / "uploads"))
+    from rag import config
+    from rag.ingest import build_index, save_uploaded_file, uploads_missing_from_index
+    from rag.retrieve import retrieve_ranked
+
+    config.CHROMA_DIR = tmp_path / "chroma_yibao"
+    config.DATA_DIR = kb
+    config.EMBEDDING_BACKEND = "hashed"
+    save_uploaded_file(
+        "职工医保.md",
+        "## 门诊统筹\n普通门诊医疗费用纳入职工基本医疗保险统筹基金支付，由医保按规定报销。\n".encode("utf-8"),
+    )
+    assert uploads_missing_from_index()
+    build_index(reset=True, data_dir=kb)
+    assert uploads_missing_from_index() == []
+    ranked = retrieve_ranked("医保覆盖门诊吗？", k=4, retriever="bm25")
+    assert ranked
+    blob = ranked[0]["doc"].page_content
+    assert "门诊" in blob
+    assert "医保" in blob or "保险" in blob
+
+
 def test_build_generator_uses_agnes_when_key_present(monkeypatch):
     monkeypatch.setenv("AGNES_API_KEY", "sk-test-agnes")
     monkeypatch.setenv("OPENAI_API_KEY", "")

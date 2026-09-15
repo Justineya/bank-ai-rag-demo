@@ -157,6 +157,31 @@ def list_uploads() -> list[Path]:
     )
 
 
+def indexed_source_names() -> set[str]:
+    store = get_vectorstore(reset=False)
+    raw = store.get(include=["metadatas"])
+    names: set[str] = set()
+    for meta in raw.get("metadatas") or []:
+        names.add(Path(str((meta or {}).get("source", ""))).name)
+    return names
+
+
+def uploads_missing_from_index() -> list[str]:
+    indexed = indexed_source_names()
+    missing = []
+    for path in list_uploads():
+        if path.name in indexed:
+            continue
+        if extracted_chars(path) == 0:
+            continue
+        missing.append(path.name)
+    return missing
+
+
+def extracted_chars(path: Path) -> int:
+    return sum(len(doc.page_content.strip()) for doc in load_path(path))
+
+
 def preview_vectors(limit: int = 15, offset: int = 0) -> dict:
     store = get_vectorstore(reset=False)
     raw = store.get(include=["documents", "metadatas", "embeddings"])

@@ -16,11 +16,13 @@ from rag.generate import preview_prompt, build_generator, postprocess_answer, ci
 from rag.ingest import (
     build_index,
     ensure_index,
+    extracted_chars,
     list_uploads,
     load_documents,
     preview_vectors,
     save_uploaded_file,
     split_documents,
+    uploads_missing_from_index,
 )
 from rag.rerank import rerank_hits
 from rag.retrieve import retrieve_ranked
@@ -160,6 +162,36 @@ def _forget_hits() -> None:
     st.session_state["reranked_query"] = None
 
 
+def _session_extra_docs() -> list[Document]:
+    note = (st.session_state.get("extra_note") or "").strip()
+    if not note:
+        return []
+    return [
+        Document(
+            page_content=f"## 学员补充\n{note}",
+            metadata={"source": "user-note.md", "file_type": "md", "page": 1},
+        )
+    ]
+
+
+def _rebuild_index() -> None:
+    with st.spinner("正在把知识库（含新上传文件）写入检索仓库…"):
+        st.session_state.index_stats = build_index(
+            reset=True,
+            extra_docs=_session_extra_docs() or None,
+            chunk_size=st.session_state.chunk_size,
+            chunk_overlap=st.session_state.chunk_overlap,
+        )
+    st.session_state.uploads_pending_index = False
+    st.session_state.index_ready = True
+
+
+def _ensure_uploads_indexed() -> None:
+    missing = uploads_missing_from_index()
+    if missing or st.session_state.get("uploads_pending_index"):
+        _rebuild_index()
+
+
 def _ensure_index_ready() -> None:
     if st.session_state.get("index_ready"):
         return
@@ -241,7 +273,7 @@ def _step_load() -> None:
     _teach(
         "知识库是磁盘上的文件：`data/kb` 里的 Markdown、PDF、Word，以及你现在上传的材料。Load 只负责读进来，变成文档对象。这里还没有搜索，也还没有向量。",
         "真实文件应该加在这一步，而不是索引步。索引只是把「已经在知识库里的东西」切块、向量化、写入 Chroma。放错位置会让人以为向量库是另一个文件夹。",
-        "先点左侧一篇制度，确认能看到「违约金」「挂失电话」。再在下面上传自己的 PDF / Word / Markdown。上传后请到「切块」看长什么样，到「索引」点重建才会进检索。",
+        "先点左侧一篇制度确认能看原文。再上传自己的文件：保存后会自动写入检索仓库，不必再跑去索引步。扫描件 PDF 抽不出字，问了也会空。",
     )
     _upload_panel()
     docs = load_documents()
@@ -268,7 +300,7 @@ def _step_load() -> None:
 
 def _upload_panel() -> None:
     st.markdown("#### 把真实文件放进知识库")
-    st.caption("支持 .pdf / .docx / .md / .txt。文件写入 `data/kb/uploads/`，属于 Load，还不等于已经能检索。")
+    st.caption("支持 .pdf / .docx / .md / .txt。保存后会自动索引；扫描版 PDF 若抽不出字，检索仍然是空的。")
     uploaded = st.file_uploader(
         "选择文件（可多选）",
         type=["pdf", "docx", "md", "txt"],
@@ -276,25 +308,43 @@ def _upload_panel() -> None:
         key="kb_file_uploader",
     )
     if uploaded and st.button("保存到知识库", type="primary"):
-        saved = []
+        saved_paths = []
+        blank = []
         for item in uploaded:
             path = save_uploaded_file(item.name, item.getvalue())
-            saved.append(path.name)
+            saved_paths.append(path)
+            if extracted_chars(path) == 0:
+                blank.append(path.name)
         st.session_state.uploads_pending_index = True
-        st.success("已放入知识库：" + "、".join(saved) + "。下一步可看切块；要检索请到「索引」点重建。")
+        try:
+            _rebuild_index()
+        except Exception as exc:
+            st.error(f"文件已保存，但写入检索仓库失败：{exc}")
+        else:
+            st.success("已保存并写入检索仓库：" + "、".join(p.name for p in saved_paths))
+        if blank:
+            st.error(
+                "这些文件没有抽出任何文字（常见于扫描件 PDF）。当前不能检索其中内容，需要可复制文字的 PDF 或加 OCR："
+                + "、".join(blank)
+            )
         st.rerun()
     existing = list_uploads()
     if existing:
         st.markdown("**已上传（可删除）**")
         for path in existing:
+            chars = extracted_chars(path)
             left, right = st.columns((4, 1))
-            left.write(f"{path.name} · {path.stat().st_size} 字节")
+            left.write(f"{path.name} · {path.stat().st_size} 字节 · 抽出 {chars} 字")
             if right.button("删除", key=f"del_upload_{path.name}"):
                 path.unlink()
                 st.session_state.uploads_pending_index = True
+                _rebuild_index()
                 st.rerun()
-    if st.session_state.get("uploads_pending_index"):
-        st.warning("知识库文件有变动，向量库还是旧的。请到第 4 步「索引」点「按当前切块重建索引」。")
+    missing = uploads_missing_from_index()
+    if missing:
+        st.warning("这些上传文件还没进检索仓库：" + "、".join(missing) + "。正在补写。")
+        _rebuild_index()
+        st.rerun()
     st.session_state.extra_note = st.text_area(
         "可选：写一条只属于你的规定（仍是知识，会在重建索引时一并入库）",
         value=st.session_state.extra_note,
@@ -333,7 +383,7 @@ def _step_index() -> None:
     _teach(
         "索引 = 把知识库里已经有的文本变成向量，写入 **Chroma**（目录 `chroma_db/`）。不是再上传一份手册。打开教室时已自动把内置手册入库。",
         "专门数据库是为了按向量近邻检索。Chroma 是嵌入式向量库。没有这一步，检索就是空仓库或还是旧文件。",
-        "真实文件请回到「知识库」步上传。这里只选向量后端，并点重建。点下面预览：每条是一段原文 + 一串数字。",
+        "真实文件在「知识库」保存后会自动重建。这里仍可换向量后端并手动重建。点下面预览确认新文件的 chunk 在不在。",
     )
     st.info("文件属于知识库；这一步只负责 Embed + Store。上传请点顶部「2. 知识库」。")
     if st.session_state.get("uploads_pending_index"):
@@ -349,25 +399,9 @@ def _step_index() -> None:
         config.EMBEDDING_BACKEND = "hashed"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
     if st.button("按当前切块重建索引", type="primary"):
-        extras = []
-        note = st.session_state.extra_note.strip()
-        if note:
-            extras.append(
-                Document(
-                    page_content=f"## 学员补充\n{note}",
-                    metadata={"source": "user-note.md", "file_type": "md", "page": 1},
-                )
-            )
         try:
-            with st.spinner("切块、向量化、写入向量库 Chroma（句向量会较慢）…"):
-                st.session_state.index_stats = build_index(
-                    reset=True,
-                    extra_docs=extras or None,
-                    chunk_size=st.session_state.chunk_size,
-                    chunk_overlap=st.session_state.chunk_overlap,
-                )
+            _rebuild_index()
             st.success("已重建。现在仓库里是当前切块与向量后端。")
-            st.session_state.uploads_pending_index = False
         except ImportError as exc:
             st.error(str(exc))
     stats = st.session_state.index_stats
@@ -479,6 +513,7 @@ def _step_retrieve() -> None:
         )
     if st.session_state.fetch_k < st.session_state.top_k:
         st.session_state.fetch_k = st.session_state.top_k
+    _ensure_uploads_indexed()
     question = _question()
     st.markdown(f"当前问题：`{question}`")
     try:
@@ -509,12 +544,24 @@ def _step_retrieve() -> None:
                 "请改回 BM25。手册里对应的说法是「提前还款」和「违约金」，在住房按揭那一节。"
             )
         else:
-            st.warning(
-                "BM25 认为这些词和仓库里的 chunk 没有足够重叠，所以分数全是 0。"
-                f"当前分词：{'、'.join(terms) or '无'}。"
-                "手册原文写的是「提前还款」「住房按揭 / 房贷」「违约金」。词对不上就会空。"
-                "「明天股价会涨吗」这种手册里没有的问题，空结果才是正确行为。"
-            )
+            from rag.ingest import indexed_source_names
+
+            sources = "、".join(sorted(indexed_source_names())[:12]) or "（无）"
+            uploads = list_uploads()
+            blank = [p.name for p in uploads if extracted_chars(p) == 0]
+            if blank:
+                st.error(
+                    "这些上传文件没有抽出文字，所以问医保/门诊也检索不到。请换成可选中复制的 PDF/Word，或先做 OCR："
+                    + "、".join(blank)
+                )
+            else:
+                st.warning(
+                    "检索仓库里现在有这些文件："
+                    + sources
+                    + f"。问句分词是：{'、'.join(terms) or '无'}，和这些 chunk 对不上。"
+                    "若刚上传，请到知识库看「抽出 N 字」是不是 0。"
+                    "词和原文不一致（例如问「覆盖」、文件写「报销」）也会空。"
+                )
         st.session_state["ranked"] = []
         st.session_state["reranked"] = []
         st.session_state["ranked_query"] = question

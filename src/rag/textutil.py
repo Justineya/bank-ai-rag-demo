@@ -104,6 +104,32 @@ class BM25Index:
                     "doc": self.docs[i],
                     "matched": sorted(matched, key=len, reverse=True),
                     "query_terms": q_terms,
+                    "score_kind": "bm25",
+                }
+            )
+        if results:
+            return results
+        return self._substring_search(q_terms, k)
+
+    def _substring_search(self, q_terms: list[str], k: int) -> list[dict]:
+        """BM25 全 0 时：用原文是否包含问句里的词再捞一遍（医保 vs 医疗保险）。"""
+        ranked: list[tuple[float, int, set[str]]] = []
+        for i, doc in enumerate(self.docs):
+            text = doc.page_content
+            matched = {term for term in q_terms if term and term in text}
+            if not matched:
+                continue
+            ranked.append((float(len(matched)), i, matched))
+        ranked.sort(reverse=True)
+        results = []
+        for score, i, matched in ranked[:k]:
+            results.append(
+                {
+                    "score": round(score, 4),
+                    "doc": self.docs[i],
+                    "matched": sorted(matched, key=len, reverse=True),
+                    "query_terms": q_terms,
+                    "score_kind": "substring",
                 }
             )
         return results
