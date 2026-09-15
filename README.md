@@ -42,6 +42,7 @@ Prompt + LLM / 抽取式回答    Generate
 
 ```
 data/kb/          银行知识库（储蓄 / 信用卡 / 贷款 / KYC / RAG 笔记）
+data/terms.txt    jieba 用户词典（产品名）
 src/rag/          流水线源码，一文件一层
   config.py       路径与模型
   embeddings.py   文本 → 向量
