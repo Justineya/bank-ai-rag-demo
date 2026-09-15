@@ -189,6 +189,27 @@ def test_rerank_promotes_overlap_over_high_recall_score():
     assert kept[0]["rerank_rank"] == 1
 
 
+def test_rerank_keeps_penalty_chunk_for_prepay_question():
+    from rag.rerank import rerank_hits
+
+    rate = {
+        "score": 4.0,
+        "doc": Document(page_content="## 利率\n演示加点为 +55BP，随 LPR 调整。", metadata={"source": "rate.md"}),
+        "matched": ["利率"],
+    }
+    penalty = {
+        "score": 9.0,
+        "doc": Document(
+            page_content="第七条 满 12 个月未满 36 个月提前结清的，按本金 1% 计收违约金；满 36 个月后免收违约金。",
+            metadata={"source": "06-housing-loan-rules.pdf"},
+        ),
+        "matched": ["违约金", "房贷"],
+    }
+    kept = rerank_hits("提前还房贷要不要付违约金", [penalty, rate], keep=1)
+    assert "违约金" in kept[0]["doc"].page_content
+    assert "06-housing-loan-rules.pdf" in str(kept[0]["doc"].metadata.get("source"))
+
+
 def test_postprocess_is_not_a_prompt_rewrite():
     from rag.generate import postprocess_answer
 

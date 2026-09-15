@@ -58,6 +58,11 @@ def main() -> None:
     llm_name = "Agnes" if config.AGNES_API_KEY else ("OpenAI" if config.OPENAI_API_KEY else ("Groq" if config.GROQ_API_KEY else "未接入（抽取原文）"))
     st.title("星河银行 RAG 教室")
     st.caption("建议按「下一步」慢慢走。检索仓库会在第一次打开时自动建好，你不用先添加资料。")
+    st.text_input(
+        "当前问题（检索 / 重排 / 生成都用这一句，翻页不会丢）",
+        key="query",
+        on_change=_forget_hits,
+    )
     if n_chunks:
         st.success(
             f"检索仓库：{n_chunks} 个 chunk。生成器：{llm_name}。"
@@ -90,7 +95,7 @@ def main() -> None:
 def _init_state() -> None:
     defaults = {
         "step": 0,
-        "question": "活期利率是多少？",
+        "query": "活期利率是多少？",
         "chunk_size": config.CHUNK_SIZE,
         "chunk_overlap": config.CHUNK_OVERLAP,
         "top_k": config.TOP_K,
@@ -126,6 +131,13 @@ def _load_secrets() -> None:
         if val:
             os.environ[dest] = val
     config.reload()
+
+
+def _forget_hits() -> None:
+    st.session_state["ranked"] = None
+    st.session_state["reranked"] = None
+    st.session_state["ranked_query"] = None
+    st.session_state["reranked_query"] = None
 
 
 def _ensure_index_ready() -> None:
@@ -368,10 +380,9 @@ def _step_question() -> None:
     _teach(
         "原句不会整句丢进仓库。先分词，再丢掉「是、吗、多少」等停用词。`data/terms.txt` 里的产品名（随心贷、房贷、违约金）会当成一个词。",
         "分词错了，检索就会空或跑偏。比如只切出「房」和「贷」，就对不上手册里的「住房按揭」。",
-        "点现成问题会跳到检索。先看下面的分词芯片再跳。也可以故意问「明天股价会涨吗」看空手是什么样子。",
+        "点顶部的问题框，或点下面现成问句跳到检索。先看分词芯片。也可以故意问「明天股价会涨吗」看空手是什么样子。",
     )
-    st.text_input("你的问题", key="question")
-    st.caption("点这些会填进输入框，并跳到检索步：")
+    st.caption("点这些会填进顶部的问题，并跳到检索步：")
     cols = st.columns(len(SAMPLE_QUESTIONS))
     for i, sample in enumerate(SAMPLE_QUESTIONS):
         with cols[i]:
@@ -382,7 +393,7 @@ def _step_question() -> None:
                 args=(sample,),
                 key=f"sample_q_{i}",
             )
-    terms = tokenize(st.session_state.question)
+    terms = tokenize(st.session_state.query)
     st.markdown("**分词后用来检索的词**")
     if terms:
         chips = " ".join(f'<span class="chip">{html.escape(t)}</span>' for t in terms)
@@ -393,8 +404,9 @@ def _step_question() -> None:
 
 def _use_sample_question(sample: str) -> None:
     # 回调在下一轮渲染、创建 text_input 之前执行，避免改已实例化的 widget key。
-    st.session_state.question = sample
+    st.session_state.query = sample
     st.session_state.step = 5
+    _forget_hits()
 
 
 def _step_retrieve() -> None:
@@ -417,7 +429,7 @@ def _step_retrieve() -> None:
         )
     if st.session_state.fetch_k < st.session_state.top_k:
         st.session_state.fetch_k = st.session_state.top_k
-    question = st.session_state.question
+    question = st.session_state.query
     st.markdown(f"当前问题：`{question}`")
     try:
         ranked = retrieve_ranked(
@@ -455,6 +467,7 @@ def _step_retrieve() -> None:
             )
         st.session_state["ranked"] = []
         st.session_state["reranked"] = []
+        st.session_state["ranked_query"] = question
         return
     rows = []
     for i, item in enumerate(ranked, start=1):
@@ -471,6 +484,7 @@ def _step_retrieve() -> None:
         )
     st.dataframe(rows, hide_index=True, use_container_width=True)
     st.session_state["ranked"] = ranked
+    st.session_state["ranked_query"] = question
     st.caption("上面整张表都会进入下一步重排；生成器仍然只能看见重排后留下的几条。")
     for i, item in enumerate(ranked[:8], start=1):
         src = Path(str(item["doc"].metadata.get("source", ""))).name
@@ -479,32 +493,41 @@ def _step_retrieve() -> None:
             st.caption("高亮 = 和问题分词重叠的词。没有高亮却被召回，多半是向量近邻，语义像但用词不同。")
 
 
+def _ensure_ranked(question: str) -> list:
+    ranked = st.session_state.get("ranked")
+    if ranked is not None and st.session_state.get("ranked_query") == question:
+        return ranked
+    ranked = retrieve_ranked(
+        question,
+        k=st.session_state.top_k,
+        retriever=st.session_state.retriever_mode,
+        fetch_k=st.session_state.fetch_k,
+    )
+    st.session_state["ranked"] = ranked
+    st.session_state["ranked_query"] = question
+    return ranked
+
+
 def _step_rerank() -> None:
     _teach(
-        "重排用「问题和这段话对得上的程度」再打一遍分，只留下 top-k 给生成器。教室里用词重叠 + 标题加权；生产里常换成 Cross-Encoder / bge-reranker。",
-        "小知识库、BM25 已经很准时，这一步收益有限，可以不加。候选一多、向量召回噪音大时，几乎都会加。官方 rag-from-scratch 三步里没有它，所以它是可选增强，不是 RAG 定义的一部分。",
+        "重排用「问题和这段话对得上的程度」再打一遍分，只留下 top-k 给生成器。教室里把召回分和词重叠混在一起；生产里常换成 Cross-Encoder / bge-reranker。",
+        "如果这里的问题和你在提问步写的不一致，精排会拿错尺子，结果反而比只检索更差。当前句始终显示在页面顶部。",
         "对照左右两张表：左边是召回顺序，右边是精排后留下的。名次若对调，说明第一轮检索把更相关的段落排到了后面。",
     )
-    question = st.session_state.question
-    ranked = st.session_state.get("ranked")
-    if ranked is None:
-        try:
-            ranked = retrieve_ranked(
-                question,
-                k=st.session_state.top_k,
-                retriever=st.session_state.retriever_mode,
-                fetch_k=st.session_state.fetch_k,
-            )
-            st.session_state["ranked"] = ranked
-        except Exception as exc:
-            st.error(f"请先完成索引和检索：{exc}")
-            return
+    question = st.session_state.query
+    st.markdown(f"正在精排的问题：`{question}`")
+    try:
+        ranked = _ensure_ranked(question)
+    except Exception as exc:
+        st.error(f"请先完成索引和检索：{exc}")
+        return
     if not ranked:
         st.warning("召回为空，没有可重排的段落。回到检索步换一个问题。")
         st.session_state["reranked"] = []
         return
     kept = rerank_hits(question, ranked, keep=st.session_state.top_k)
     st.session_state["reranked"] = kept
+    st.session_state["reranked_query"] = question
     left, right = st.columns(2)
     with left:
         st.markdown("#### 召回顺序（未精排）")
@@ -555,19 +578,15 @@ def _step_generate() -> None:
         "改 Prompt 只能影响「模型怎么写」。引用列表、拒答、格式清洗属于规则，放在生成之后更稳，也不消耗一次额外的模型调用。",
         "先看 Prompt，再看「模型原文」和「后处理之后」。对照第一名原文。没有 Key 时只有抽取式摘要，后处理仍会补引用文件。",
     )
-    ranked = st.session_state.get("reranked") or st.session_state.get("ranked")
-    question = st.session_state.question
-    if not ranked:
+    ranked = st.session_state.get("reranked")
+    question = st.session_state.query
+    st.markdown(f"正在回答的问题：`{question}`")
+    if not ranked or st.session_state.get("reranked_query") != question:
         try:
-            recalled = retrieve_ranked(
-                question,
-                k=st.session_state.top_k,
-                retriever=st.session_state.retriever_mode,
-                fetch_k=st.session_state.fetch_k,
-            )
+            recalled = _ensure_ranked(question)
             ranked = rerank_hits(question, recalled, keep=st.session_state.top_k)
-            st.session_state["ranked"] = recalled
             st.session_state["reranked"] = ranked
+            st.session_state["reranked_query"] = question
         except Exception as exc:
             st.error(f"请先完成索引和检索：{exc}")
             return
