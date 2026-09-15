@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
 from rag.generate import preview_prompt, build_generator
-from rag.ingest import build_index, load_documents, split_documents
+from rag.ingest import build_index, ensure_index, load_documents, split_documents
 from rag.retrieve import retrieve_ranked
 from rag.textutil import tokenize
 
@@ -39,9 +39,13 @@ def main() -> None:
     st.set_page_config(page_title="星河银行 RAG 教室", page_icon="🏦", layout="wide")
     _inject_css()
     _init_state()
+    _ensure_index_ready()
 
+    n_chunks = (st.session_state.index_stats or {}).get("chunks")
     st.title("星河银行 RAG 教室")
-    st.caption("每一步都能点、能改。看完一遍，你就知道 RAG 为什么不是「把文档丢给模型」那么简单。")
+    st.caption("建议按「下一步」慢慢走。检索仓库会在第一次打开时自动建好，你不用先添加资料。")
+    if n_chunks:
+        st.success(f"当前手册已在检索仓库里：{n_chunks} 个 chunk。索引 = 把切好的段落存起来供搜索，不是让你再贴一遍文档。")
     _pipeline_nav()
     st.progress((st.session_state.step + 1) / len(STEPS), text=f"第 {st.session_state.step + 1} / {len(STEPS)} 步 · {STEPS[st.session_state.step][1]}")
 
@@ -74,10 +78,21 @@ def _init_state() -> None:
         "retriever_mode": config.RETRIEVER,
         "index_stats": None,
         "extra_note": "",
-        "picked_source": None,
+        "index_ready": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+
+
+def _ensure_index_ready() -> None:
+    if st.session_state.get("index_ready"):
+        return
+    with st.spinner("正在把星河银行手册写入检索仓库（只需几秒）。这是自动的，不用你添加内容。"):
+        st.session_state.index_stats = ensure_index(
+            chunk_size=st.session_state.chunk_size,
+            chunk_overlap=st.session_state.chunk_overlap,
+        )
+    st.session_state.index_ready = True
 
 
 def _pipeline_nav() -> None:
@@ -90,27 +105,38 @@ def _pipeline_nav() -> None:
                 st.rerun()
 
 
-def _teach(do_what: str, click_what: str) -> None:
-    left, right = st.columns(2)
-    with left:
+def _teach(do_what: str, why: str, click_what: str) -> None:
+    a, b, c = st.columns(3)
+    with a:
         st.markdown(f'<div class="card teach"><h4>这一步在做什么</h4><p>{do_what}</p></div>', unsafe_allow_html=True)
-    with right:
+    with b:
+        st.markdown(f'<div class="card why"><h4>为什么需要它</h4><p>{why}</p></div>', unsafe_allow_html=True)
+    with c:
         st.markdown(f'<div class="card act"><h4>你可以点什么</h4><p>{click_what}</p></div>', unsafe_allow_html=True)
 
 
 def _step_intro() -> None:
     _teach(
-        "大模型只记得训练时见过的内容。银行利率、内部制度、你刚写的规则，它往往不知道，还可能编造。"
-        "RAG 的办法是：先从本地资料里找出相关段落，再让模型「看着资料」回答。",
-        "点顶部的步骤条可以跳着看；也可以一直点页面底部的「下一步」。建议先按顺序走完一遍。",
+        "大模型把世界记在参数里，但星河银行的利率、还款规则并不在里面。它不知道，就可能编。",
+        "RAG 不是另一种聊天模型，而是先「查手册再回答」。查得到的段落，后面才能写进答案；查不到，就应该说资料没有。",
+        "不要一次跳到检索。用底部「下一步」从知识库走到生成。顶部步骤条只是地图。",
+    )
+    st.markdown(
+        """
+#### 先记住三件事（后面每一步都在落实）
+
+1. **知识库**是人写好的 Markdown，模型事先没读过。  
+2. **索引**把手册切成小段放进仓库，提问时才能搜。你不用往里面「添加」产品——手册已经在仓库里，打开页面时会自动入库。  
+3. **检索**只取出几小段给生成器用。生成器看不见全文，所以排不到前面的段落等于不存在。
+"""
     )
     c1, c2, c3 = st.columns(3)
     c1.metric("知识库文档", "5 篇+", "储蓄 / 信用卡 / 贷款…")
-    c2.metric("默认检索", "BM25", "中文关键词更稳")
+    c2.metric("默认检索", "BM25", "按词匹配，适合专有名词")
     c3.metric("默认生成", "抽取原文", "没有 API Key 也能学")
     st.markdown("#### 整条流水线")
     st.code(
-        "文档 → 切块 → 写入 Chroma → 问题分词 → 检索 top-k → 填进 Prompt → 生成答案",
+        "文档 → 切块 → 写入仓库(索引) → 问题分词 → 检索 top-k → 填进 Prompt → 生成答案",
         language="text",
     )
     if st.button("从知识库开始参观", type="primary"):
@@ -121,8 +147,9 @@ def _step_intro() -> None:
 def _step_load() -> None:
     docs = load_documents()
     _teach(
-        "Load 只做一件事：把 `data/kb` 里的 Markdown 读成「一篇文档一个对象」。还没有向量，也还没有答案。",
-        "左侧点文件名看原文。试着找到「随心贷」和「0.20%」分别写在哪一篇——后面检索就靠这些字。",
+        "Load 只是把 `data/kb` 里的 Markdown 读进内存：一篇文件 = 一个文档对象。这里还没有搜索，也没有答案。",
+        "后面所有检索都只能搜到这些字。如果利率写在储蓄手册里，你却只索引了别的文件，问利率就会失败。",
+        "左侧点文件名看原文。请先找到「0.20%」和「提前还款 / 违约金」分别在哪一篇，后面对照检索结果。",
     )
     names = [Path(doc.metadata["source"]).name for doc in docs]
     left, right = st.columns((1, 2))
@@ -139,8 +166,9 @@ def _step_load() -> None:
 def _step_split() -> None:
     docs = load_documents()
     _teach(
-        "一篇手册太长，相似度会被稀释。所以按 `##` 标题切开，太长的段落再按字数切开，并留一点 overlap，避免一句话被拦腰截断。",
-        "拖动切块大小，观察 chunk 数量变化。点开某个 chunk，看看「随心贷」是独立一段，还是和房贷挤在一起。",
+        "整本手册太长，无法整本拿去比相似度。按 `##` 标题切开，过长的再按字数切，并留 overlap，避免一句话被切断。",
+        "切块决定「一次能命中多大范围」。切太大，随心贷和房贷挤在一起；切太碎，一条规则裂成半句。",
+        "拖动切块大小，看数量变化。点开含「提前还款」的 chunk。改完大小后，要到下一步点「重建」才会写进仓库。",
     )
     c1, c2 = st.columns(2)
     with c1:
@@ -163,17 +191,18 @@ def _step_split() -> None:
 
 def _step_index() -> None:
     _teach(
-        "每个 chunk 会变成向量（默认是教学用哈希向量），再和原文一起写入本地 Chroma。"
-        "提问时默认用 BM25 在这些 chunk 上打分；向量检索可以稍后对比。",
-        "先随便写一条「你自己的规定」，再点「写入索引」。下两步提问时，可以问这条内容，验证 RAG 用的是你刚放进去的资料。",
+        "索引 = 把切好的段落放进可搜索的仓库（Chroma）。不是让你再上传一份银行资料。打开教室时已经用手册自动建过一次。",
+        "没有索引时，检索对着空仓库，任何问题都是 0 条结果。这不是模型坏了，是还没有可搜的存货。",
+        "只有改了切块大小、或在下面写了自己的规定时，才需要点「重建索引」。日常提问不用再点。",
     )
+    st.info("你不需要「添加」星河银行手册。它已经在 `data/kb`。索引只是把这些文件做成可搜索状态。")
     st.session_state.extra_note = st.text_area(
         "可选：写一条只属于你的知识（会随索引一起入库，不覆盖手册）",
         value=st.session_state.extra_note,
         placeholder="例如：星河银行大厅取号后超时 15 分钟需重新取号。",
         height=90,
     )
-    if st.button("写入 / 重建索引", type="primary"):
+    if st.button("按当前切块重建索引", type="secondary"):
         extras = []
         note = st.session_state.extra_note.strip()
         if note:
@@ -185,7 +214,7 @@ def _step_index() -> None:
                 chunk_size=st.session_state.chunk_size,
                 chunk_overlap=st.session_state.chunk_overlap,
             )
-        st.success("索引已写入。下一步可以提问了。")
+        st.success("已重建。现在仓库里是当前切块设置（以及你写的补充，如果有）。")
     stats = st.session_state.index_stats
     if stats:
         a, b, c = st.columns(3)
@@ -194,13 +223,14 @@ def _step_index() -> None:
         c.metric("embedding", stats["embedding_backend"])
         st.caption(f"落盘目录：`{stats['persist_directory']}`")
     else:
-        st.warning("还没有索引。不点写入的话，后面检索会失败或用到旧数据。")
+        st.caption("仓库已有内容。不必再点重建，除非你改了切块或写了补充规定。")
 
 
 def _step_question() -> None:
     _teach(
-        "用户原话不会直接拿去比向量。中文要先分词，并丢掉「是、吗、多少」这类停用词。产品名来自 `data/terms.txt`，所以「随心贷」会当成一个词。",
-        "点下面的现成问题，或自己改一句话。试一个知识库里没有的问题（比如股价），记住分词结果，到下一步看检索会不会空手。",
+        "原句不会整句丢进仓库。先分词，再丢掉「是、吗、多少」等停用词。`data/terms.txt` 里的产品名（随心贷、房贷、违约金）会当成一个词。",
+        "分词错了，检索就会空或跑偏。比如只切出「房」和「贷」，就对不上手册里的「住房按揭」。",
+        "点现成问题会跳到检索。先看下面的分词芯片再跳。也可以故意问「明天股价会涨吗」看空手是什么样子。",
     )
     st.text_input("你的问题", key="question")
     st.caption("点这些会填进输入框，并跳到检索步：")
@@ -231,8 +261,9 @@ def _use_sample_question(sample: str) -> None:
 
 def _step_retrieve() -> None:
     _teach(
-        "检索器给每个 chunk 打分，只把前 k 名交给生成器。默认 BM25：词越稀有、命中越多、标题里出现，分越高。排不到前面的段落，后面的「模型」根本看不见。",
-        "改 top-k、切换 BM25 / 向量，观察第一名会不会换人。点开一条，黄色高亮就是命中的检索词。",
+        "检索器给每个 chunk 打分，只把前 k 名交给生成器。默认 BM25 看「词是否出现」；vector 用教学哈希向量看「向量近不近」。排不到前面的段落，生成器看不见。",
+        "结果为空通常有三种原因：仓库是空的（没索引）；问句用词和手册不一致；你开了 vector，而教学哈希向量对中文很弱。",
+        "先保持 BM25。点开第一名看黄字命中。只有想对比时才切 vector。改 top-k 看会不会多捞到后排资料。",
     )
     c1, c2 = st.columns(2)
     with c1:
@@ -249,11 +280,32 @@ def _step_retrieve() -> None:
     try:
         ranked = retrieve_ranked(question, k=st.session_state.top_k, retriever=st.session_state.retriever_mode)
     except Exception as exc:
-        st.error(f"还没有可用索引：{exc}")
-        st.info("回到「索引」那一步点写入。")
+        st.error(f"检索失败：{exc}")
+        st.session_state.index_ready = False
+        _ensure_index_ready()
         return
+    terms = tokenize(question)
+    st.caption("本问用来打分的词：" + ("、".join(terms) if terms else "（空）"))
     if not ranked:
-        st.warning("没有 chunk 得分大于 0。可能是还没建索引，或问题里的词手册里都没有——这正是 RAG 该说「资料里没有」的时候。")
+        from rag.ingest import count_indexed
+
+        n = count_indexed()
+        if n == 0:
+            st.error("没有结果，因为检索仓库是空的（还没有索引），不是这句话没有答案。页面顶部会自动建库，请刷新后再问一次。")
+            st.session_state.index_ready = False
+            _ensure_index_ready()
+        elif st.session_state.retriever_mode == "vector":
+            st.warning(
+                "没有可用的向量近邻。当前是教学用哈希向量，对「提前还房贷」这类句子很弱。"
+                "请改回 BM25。手册里对应的说法是「提前还款」和「违约金」，在住房按揭那一节。"
+            )
+        else:
+            st.warning(
+                "BM25 认为这些词和仓库里的 chunk 没有足够重叠，所以分数全是 0。"
+                f"当前分词：{'、'.join(terms) or '无'}。"
+                "手册原文写的是「提前还款」「住房按揭 / 房贷」「违约金」。词对不上就会空。"
+                "「明天股价会涨吗」这种手册里没有的问题，空结果才是正确行为。"
+            )
         return
     rows = []
     for i, item in enumerate(ranked, start=1):
@@ -262,6 +314,7 @@ def _step_retrieve() -> None:
             {
                 "名次": i,
                 "分数": item["score"],
+                "含义": "向量距离(越小越近)" if item.get("score_kind") == "vector_distance" else "BM25(越大越好)",
                 "命中词": "、".join(item["matched"]) or "—",
                 "来源": src,
                 "开头": item["doc"].page_content.strip().splitlines()[0][:32],
@@ -278,8 +331,9 @@ def _step_retrieve() -> None:
 
 def _step_generate() -> None:
     _teach(
-        "生成器不能偷看知识库全文，只能看见上一步挑出来的资料。没有 API Key 时，我们诚实地把第一名原文当作答案；有 Key 时，同一份 Prompt 会交给 LLM，并要求「资料没有就说没有」。",
-        "展开 Prompt 看模型实际吃进什么。对照答案和第一名原文：如果原文错了，答案也会错——这就是 RAG 的诚实之处。",
+        "生成器不能偷看手册全文，只能看见上一步挑出的几段。没有 API Key 时，我们把第一名原文当作答案；有 Key 时同一份 Prompt 交给 LLM。",
+        "答案被 Prompt 锁死。检索错了，生成再强也会错。空检索就不该编利率。",
+        "展开 Prompt，对照答案和第一名原文是否一致。",
     )
     ranked = st.session_state.get("ranked")
     question = st.session_state.question
@@ -338,7 +392,8 @@ def _inject_css() -> None:
     st.markdown(
         """
         <style>
-        .card { border-radius: 16px; padding: 16px 18px; min-height: 132px; }
+        .why { background: #fff7ed; border: 1px solid #fed7aa; }
+        .card { border-radius: 16px; padding: 16px 18px; min-height: 150px; }
         .teach { background: #eef2ff; border: 1px solid #c7d2fe; }
         .act { background: #ecfdf5; border: 1px solid #a7f3d0; }
         .card h4 { margin: 0 0 8px 0; font-size: 0.95rem; }

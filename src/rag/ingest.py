@@ -92,3 +92,29 @@ def build_index(
         "persist_directory": str(config.CHROMA_DIR),
         "embedding_backend": config.EMBEDDING_BACKEND,
     }
+
+
+def count_indexed() -> int:
+    store = get_vectorstore(reset=False)
+    raw = store.get(include=["documents"])
+    return len(raw.get("documents") or [])
+
+
+def ensure_index(
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> dict:
+    """仓库空时才建。用户不必先「添加」任何资料。"""
+    n = count_indexed()
+    if n > 0:
+        return {
+            "documents": len(load_documents()),
+            "chunks": n,
+            "ids": n,
+            "persist_directory": str(config.CHROMA_DIR),
+            "embedding_backend": config.EMBEDDING_BACKEND,
+            "rebuilt": False,
+        }
+    stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    stats["rebuilt"] = True
+    return stats

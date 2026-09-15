@@ -10,7 +10,7 @@ from langchain_core.documents import Document
 
 from rag import config
 from rag.ingest import get_vectorstore
-from rag.textutil import BM25Index, lexical_overlap, tokenize
+from rag.textutil import BM25Index, tokenize
 
 
 def _all_docs() -> list[Document]:
@@ -30,20 +30,25 @@ def retrieve_ranked(question: str, k: int | None = None, retriever: str | None =
     mode = (retriever or config.RETRIEVER).lower()
     if mode == "vector":
         store = get_vectorstore(reset=False)
-        fetch_k = min(max(top_k * 4, top_k), len(docs))
-        candidates = store.similarity_search(question, k=fetch_k)
+        fetch_k = min(max(top_k, 1), len(docs))
+        # 教学哈希向量的「分数」是距离，不是 BM25。只要仓库非空就一定返回邻居，
+        # 不再用词重叠把结果滤成空列表。
+        try:
+            pairs = store.similarity_search_with_score(question, k=fetch_k)
+        except Exception:
+            pairs = [(doc, 0.0) for doc in store.similarity_search(question, k=fetch_k)]
         ranked = []
-        for doc in candidates:
+        for doc, dist in pairs:
             terms = set(tokenize(question)) & set(tokenize(doc.page_content))
             ranked.append(
                 {
-                    "score": round(lexical_overlap(question, doc.page_content), 4),
+                    "score": round(float(dist), 4),
                     "doc": doc,
                     "matched": sorted(terms, key=len, reverse=True),
                     "query_terms": tokenize(question),
+                    "score_kind": "vector_distance",
                 }
             )
-        ranked.sort(key=lambda item: item["score"], reverse=True)
         return ranked[:top_k]
     return BM25Index(docs).ranked_search(question, top_k)
 

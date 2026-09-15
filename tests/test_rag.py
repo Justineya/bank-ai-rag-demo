@@ -92,6 +92,9 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     assert "随心贷" in loan.sources[0].page_content
     assert "股市" in loan.sources[0].page_content or "不可用于" in loan.sources[0].page_content
 
+    prepay = ask("提前还房贷要不要违约金？", k=4)
+    assert "违约金" in prepay.sources[0].page_content
+
     ranked = retrieve_ranked("随心贷能用来炒股吗？", k=2, retriever="bm25")
     assert ranked
     assert ranked[0]["score"] > 0
