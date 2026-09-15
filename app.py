@@ -12,7 +12,7 @@ from langchain_core.documents import Document
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
-from rag.generate import preview_prompt, build_generator, postprocess_answer
+from rag.generate import preview_prompt, build_generator, postprocess_answer, cited_clips
 from rag.ingest import (
     build_index,
     ensure_index,
@@ -33,7 +33,7 @@ STEPS = [
     ("索引", "Embed + Store：写进仓库"),
     ("提问", "把问题变成检索词"),
     ("检索", "Retrieve：先多召回"),
-    ("重排", "Rerank：再精排留下几条"),
+    ("重排", "教学用词重叠精排"),
     ("生成", "Generate + 后处理"),
 ]
 
@@ -527,10 +527,11 @@ def _ensure_ranked(question: str) -> list:
 
 def _step_rerank() -> None:
     _teach(
-        "重排用「问题和这段话对得上的程度」再打一遍分，只留下 top-k 给生成器。教室里把召回分和词重叠混在一起；生产里常换成 Cross-Encoder / bge-reranker。",
-        "如果这里的问题和你在提问步写的不一致，精排会拿错尺子，结果反而比只检索更差。当前句始终显示在页面顶部。",
-        "对照左右两张表：左边是召回顺序，右边是精排后留下的。名次若对调，说明第一轮检索把更相关的段落排到了后面。",
+        "重排这一步的位置是真的：先多捞再精排。本教室用的分是词重叠 + BM25，不是 bge-reranker。生产里应换成 Cross-Encoder。",
+        "词袋精排和 BM25 几乎看同一类信号，所以经常「名次不变」或只会微调。它用来演示流水线，不能当成上线用的精排模型。",
+        "对照左右表即可。若要换成 bge，应在这一步对 (问题, 段落) 对打分，而不是再算一遍词频。",
     )
+    st.warning("当前精排规则：归一化召回分 + 词/标题重叠 − 缺词惩罚。没有加载 bge-reranker。")
     question = st.session_state.query
     st.markdown(f"正在精排的问题：`{question}`")
     try:
@@ -591,9 +592,9 @@ def _step_rerank() -> None:
 
 def _step_generate() -> None:
     _teach(
-        "生成器只能看见重排后留下的几段。Prompt 在调用模型之前约束它；后处理在模型写完之后检查：空检索拒答、去掉代码围栏、补 (资料N)、列出引用文件。",
-        "改 Prompt 只能影响「模型怎么写」。引用列表、拒答、格式清洗属于规则，放在生成之后更稳，也不消耗一次额外的模型调用。",
-        "先看 Prompt，再看「模型原文」和「后处理之后」。对照第一名原文。没有 Key 时只有抽取式摘要，后处理仍会补引用文件。",
+        "生成器只能看见精排留下的几段。答案区只写结论；原文以「从文件抽出的卡片」展示，且只展示答案点名的资料N。",
+        "没被点名的段落不该出现在结果里，否则像把检索列表又贴了一遍。PDF 按页摘一句，而不是整页墙。",
+        "先看答案和引用卡片。Prompt 折在下面，需要时再打开。",
     )
     ranked = st.session_state.get("reranked")
     question = st.session_state.query
@@ -625,31 +626,34 @@ def _step_generate() -> None:
         raw = ExtractiveGenerator().generate(question, docs)
         name = f"{name}（调用失败，回退抽取）"
     final, notes = postprocess_answer(raw, question, docs)
-    left, right = st.columns(2)
-    with left:
-        st.markdown("#### 后处理之后的答案（用户看到的）")
-        st.write(final)
-        st.caption(f"当前生成器：`{name}` · 后处理：" + ("、".join(notes) if notes else "无"))
-        with st.expander("模型刚写完、还没后处理的原文"):
-            st.write(raw)
-    with right:
-        st.markdown("#### 它只看见这些资料（重排后）")
-        for i, doc in enumerate(docs, start=1):
-            src = Path(str(doc.metadata.get("source", ""))).name
-            st.markdown(f"**资料{i} · {src}**")
-            st.write(doc.page_content[:280] + ("…" if len(doc.page_content) > 280 else ""))
-    with st.expander("① 发给模型的 Prompt（生成前，靠这段话锁死答案）", expanded=True):
+    clips = cited_clips(final, docs, question)
+    st.markdown("#### 答案")
+    st.markdown(f'<div class="answer-box">{html.escape(final).replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+    st.caption(f"生成器：`{name}`" + (f" · 后处理：{'、'.join(notes)}" if notes else ""))
+    st.markdown("#### 从文件中抽出")
+    if clips:
+        st.caption("只显示答案里写了 (资料N) 的片段。PDF / Word 按页摘录，不是整份文件。")
+        for clip in clips:
+            st.markdown(_clip_html(clip), unsafe_allow_html=True)
+    else:
+        st.info("答案没有引用任何资料，因此不展示原文。若检索为空或模型明确说资料没有，这是预期行为。")
+    with st.expander("发给模型的 Prompt（生成前）"):
         st.code(preview_prompt(question, docs), language="markdown")
-    with st.expander("② 后处理做了什么（生成后，不是再改 Prompt）", expanded=True):
+    with st.expander("后处理做了什么"):
         st.markdown(
             """
-- **空检索拒答**：没有资料就不让模型编利率。
+- **空检索拒答**：没有资料就不编利率。
 - **去掉代码围栏**：有的模型喜欢包一层 markdown。
-- **补引用**：正文里如果没有 `(资料N)`，补上。
-- **列出文件名**：方便对照来源。生产里还可以做忠实度检查、敏感信息过滤。
+- **补引用**：正文里如果没有 `(资料N)` 且第一段确实相关，才补上。
+- 原文改由上面的文件卡片展示，不再把未引用的 chunk 堆在答案旁边。
 """
         )
         st.caption("本轮实际执行：" + ("、".join(notes) if notes else "无"))
+        with st.expander("模型刚写完、还没后处理的原文"):
+            st.write(raw)
+    unused = len(docs) - len(clips)
+    if unused > 0 and clips:
+        st.caption(f"检索还拿到 {unused} 段未在答案中引用，已隐藏。")
     if name.startswith("agnes:"):
         st.success(f"本步已调用 Agnes 大模型（`{name}`）。检索仍在本地，模型只根据上面的资料作答。")
     elif name == "extractive":
@@ -671,6 +675,24 @@ def _pager() -> None:
         if st.session_state.step < len(STEPS) - 1 and st.button("下一步 →", type="primary", use_container_width=True):
             st.session_state.step += 1
             st.rerun()
+
+
+def _clip_html(clip: dict) -> str:
+    kind = html.escape(str(clip.get("kind") or "md"))
+    page = clip.get("page")
+    bits = [html.escape(clip["name"])]
+    if str(clip.get("kind")) == "pdf" and page:
+        bits.append(f"第 {page} 页")
+    elif page:
+        bits.append(f"第 {page} 节")
+    bits.append(f"资料{clip['index']}")
+    quote = html.escape(clip.get("quote") or "").replace("\n", "<br>")
+    return (
+        f'<article class="clip clip-{kind}">'
+        f'<div class="clip-badge">{html.escape(clip.get("kind_label") or "文件")}</div>'
+        f'<div class="clip-main"><div class="clip-meta">{" · ".join(bits)}</div>'
+        f"<blockquote>{quote}</blockquote></div></article>"
+    )
 
 
 def _highlight_html(text: str, terms: list[str]) -> str:
@@ -695,6 +717,22 @@ def _inject_css() -> None:
                 padding: 2px 10px; margin: 0 6px 6px 0; font-size: 0.85rem; }
         mark { background: #fde68a; padding: 0 2px; border-radius: 4px; }
         .passage { background: #fffbeb; border: 1px solid #fcd34d; border-radius: 12px; padding: 12px 14px; }
+        .answer-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px;
+                      padding: 18px 20px; font-size: 1.05rem; line-height: 1.7; color: #0f172a; }
+        .clip { display: flex; gap: 0; margin: 12px 0 16px 0; border-radius: 12px;
+                overflow: hidden; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08); }
+        .clip-badge { writing-mode: vertical-rl; text-orientation: mixed; letter-spacing: 0.2em;
+                      font-size: 0.75rem; font-weight: 700; padding: 12px 8px; color: white;
+                      display: flex; align-items: center; justify-content: center; min-width: 36px; }
+        .clip-md .clip-badge, .clip-txt .clip-badge { background: #334155; }
+        .clip-pdf .clip-badge { background: #b91c1c; }
+        .clip-docx .clip-badge, .clip-doc .clip-badge { background: #1d4ed8; }
+        .clip-main { flex: 1; background: #fffef8; background-image:
+                     repeating-linear-gradient(transparent, transparent 27px, #f1efe6 28px);
+                     padding: 12px 16px 16px 16px; }
+        .clip-pdf .clip-main { background: #fff7f7; }
+        .clip-meta { font-size: 0.8rem; color: #64748b; margin-bottom: 8px; letter-spacing: 0.02em; }
+        .clip blockquote { margin: 0; font-size: 0.95rem; line-height: 1.75; color: #1e293b; }
         </style>
         """,
         unsafe_allow_html=True,

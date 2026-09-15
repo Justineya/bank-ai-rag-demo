@@ -54,6 +54,7 @@ def test_extractive_generator_cites_sources():
     answer = ExtractiveGenerator().generate("活期年利率是多少", docs)
     assert "0.20%" in answer
     assert "资料1" in answer
+    assert "依据原文" not in answer
 
 
 def test_format_context_includes_index():
@@ -218,12 +219,39 @@ def test_postprocess_is_not_a_prompt_rewrite():
     assert "年利率是 0.20%" in text
     assert "```" not in text
     assert "(资料1)" in text
-    assert "01-deposit.md" in text
     assert "strip_fence" in notes
     assert "append_cite" in notes
-    assert "attach_sources" in notes
+    assert "【后处理" not in text
 
     refused, empty_notes = postprocess_answer("我编一个利率 9%。", "明天股价会涨吗", [])
     assert "不能编造" in refused
     assert "empty_retrieve" in empty_notes
     assert "9%" not in refused
+
+
+def test_cited_clips_hide_uncited_and_excerpt_pdf():
+    from rag.generate import cited_clips, quote_excerpt
+
+    pdf = Document(
+        page_content="星河银行个人住房贷款实施细则\n第四条 利率以 LPR 加点。\n第七条 满 36 个月后提前还款免收违约金。",
+        metadata={"source": "data/kb/06-housing-loan-rules.pdf", "file_type": "pdf", "page": 1},
+    )
+    other = Document(
+        page_content="## 活期储蓄\n星河活期年利率：0.20%。",
+        metadata={"source": "01-savings.md", "file_type": "md", "page": 1},
+    )
+    answer = "满 36 个月后提前还款免收违约金。 (资料1)"
+    clips = cited_clips(answer, [pdf, other], "提前还房贷要不要违约金")
+    assert len(clips) == 1
+    assert clips[0]["kind"] == "pdf"
+    assert clips[0]["name"] == "06-housing-loan-rules.pdf"
+    assert clips[0]["page"] == 1
+    assert "违约金" in clips[0]["quote"]
+    assert "0.20%" not in clips[0]["quote"]
+    quote = quote_excerpt(pdf.page_content, "提前还房贷要不要违约金")
+    assert "违约金" in quote
+    assert "第四条" not in quote
+    assert quote != pdf.page_content
+
+    none = cited_clips("资料中没有提到股价。", [pdf, other], "明天股价会涨吗")
+    assert none == []
