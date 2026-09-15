@@ -52,17 +52,13 @@ def main() -> None:
     _inject_css()
     _load_secrets()
     _init_state()
+    _persist_query()
     _ensure_index_ready()
 
     n_chunks = (st.session_state.index_stats or {}).get("chunks")
     llm_name = "Agnes" if config.AGNES_API_KEY else ("OpenAI" if config.OPENAI_API_KEY else ("Groq" if config.GROQ_API_KEY else "未接入（抽取原文）"))
     st.title("星河银行 RAG 教室")
     st.caption("建议按「下一步」慢慢走。检索仓库会在第一次打开时自动建好，你不用先添加资料。")
-    st.text_input(
-        "当前问题（检索 / 重排 / 生成都用这一句，翻页不会丢）",
-        key="query",
-        on_change=_forget_hits,
-    )
     if n_chunks:
         st.success(
             f"检索仓库：{n_chunks} 个 chunk。生成器：{llm_name}。"
@@ -70,6 +66,8 @@ def main() -> None:
         )
     _pipeline_nav()
     st.progress((st.session_state.step + 1) / len(STEPS), text=f"第 {st.session_state.step + 1} / {len(STEPS)} 步 · {STEPS[st.session_state.step][1]}")
+    if st.session_state.step != 4:
+        _show_question_banner()
 
     step = st.session_state.step
     if step == 0:
@@ -95,7 +93,7 @@ def main() -> None:
 def _init_state() -> None:
     defaults = {
         "step": 0,
-        "query": "活期利率是多少？",
+        "user_query": "活期利率是多少？",
         "chunk_size": config.CHUNK_SIZE,
         "chunk_overlap": config.CHUNK_OVERLAP,
         "top_k": config.TOP_K,
@@ -132,6 +130,27 @@ def _load_secrets() -> None:
         if val:
             os.environ[dest] = val
     config.reload()
+
+
+def _persist_query() -> None:
+    """提问框只在提问步渲染。离开那一页前，先把已输入的字存进 user_query。"""
+    if "query_box" in st.session_state:
+        st.session_state.user_query = st.session_state.query_box
+
+
+def _question() -> str:
+    return (st.session_state.get("user_query") or "").strip()
+
+
+def _show_question_banner() -> None:
+    q = _question() or "（还没有问题）"
+    left, right = st.columns((4, 1))
+    with left:
+        st.markdown(f"**当前问题：** {q}")
+    with right:
+        if st.button("自己改问题", use_container_width=True):
+            st.session_state.step = 4
+            st.rerun()
 
 
 def _forget_hits() -> None:
@@ -397,9 +416,22 @@ def _step_question() -> None:
     _teach(
         "原句不会整句丢进仓库。先分词，再丢掉「是、吗、多少」等停用词。`data/terms.txt` 里的产品名（随心贷、房贷、违约金）会当成一个词。",
         "分词错了，检索就会空或跑偏。比如只切出「房」和「贷」，就对不上手册里的「住房按揭」。",
-        "点顶部的问题框，或点下面现成问句跳到检索。先看分词芯片。也可以故意问「明天股价会涨吗」看空手是什么样子。",
+        "在下面的输入框自己打字，或点现成问句。现成问句只是省事，不是只能点按钮。",
     )
-    st.caption("点这些会填进顶部的问题，并跳到检索步：")
+    if "query_box" not in st.session_state:
+        st.session_state.query_box = st.session_state.user_query
+    st.text_area(
+        "自己打一个问题",
+        key="query_box",
+        height=100,
+        placeholder="例如：提前还房贷要不要付违约金？不必只用下面的现成问句。",
+    )
+    st.session_state.user_query = st.session_state.query_box
+    if st.button("用这个问题去检索", type="primary"):
+        _forget_hits()
+        st.session_state.step = 5
+        st.rerun()
+    st.caption("点这些会填进上面的输入框，并跳到检索：")
     cols = st.columns(len(SAMPLE_QUESTIONS))
     for i, sample in enumerate(SAMPLE_QUESTIONS):
         with cols[i]:
@@ -410,7 +442,7 @@ def _step_question() -> None:
                 args=(sample,),
                 key=f"sample_q_{i}",
             )
-    terms = tokenize(st.session_state.query)
+    terms = tokenize(_question())
     st.markdown("**分词后用来检索的词**")
     if terms:
         chips = " ".join(f'<span class="chip">{html.escape(t)}</span>' for t in terms)
@@ -421,7 +453,8 @@ def _step_question() -> None:
 
 def _use_sample_question(sample: str) -> None:
     # 回调在下一轮渲染、创建 text_input 之前执行，避免改已实例化的 widget key。
-    st.session_state.query = sample
+    st.session_state.user_query = sample
+    st.session_state.query_box = sample
     st.session_state.step = 5
     _forget_hits()
 
@@ -446,7 +479,7 @@ def _step_retrieve() -> None:
         )
     if st.session_state.fetch_k < st.session_state.top_k:
         st.session_state.fetch_k = st.session_state.top_k
-    question = st.session_state.query
+    question = _question()
     st.markdown(f"当前问题：`{question}`")
     try:
         ranked = retrieve_ranked(
@@ -532,7 +565,7 @@ def _step_rerank() -> None:
         "对照左右表即可。若要换成 bge，应在这一步对 (问题, 段落) 对打分，而不是再算一遍词频。",
     )
     st.warning("当前精排规则：归一化召回分 + 词/标题重叠 − 缺词惩罚。没有加载 bge-reranker。")
-    question = st.session_state.query
+    question = _question()
     st.markdown(f"正在精排的问题：`{question}`")
     try:
         ranked = _ensure_ranked(question)
@@ -597,7 +630,7 @@ def _step_generate() -> None:
         "先看答案和引用卡片。Prompt 折在下面，需要时再打开。",
     )
     ranked = st.session_state.get("reranked")
-    question = st.session_state.query
+    question = _question()
     st.markdown(f"正在回答的问题：`{question}`")
     if not ranked or st.session_state.get("reranked_query") != question:
         try:
