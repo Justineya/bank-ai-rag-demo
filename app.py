@@ -104,6 +104,7 @@ def _init_state() -> None:
         "index_stats": None,
         "extra_note": "",
         "index_ready": False,
+        "uploads_pending_index": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -182,7 +183,7 @@ def _step_intro() -> None:
 #### 先记住四件事（后面每一步都在落实）
 
 1. **知识库**是 Markdown、PDF、Word 等文件，模型事先没读过。  
-2. **索引**把文件切段、向量化，写入 Chroma。你不用再贴一遍产品——打开页面会自动入库。  
+2. **索引**把文件切段、向量化，写入 Chroma。加文件在知识库，写向量在索引。打开页面会自动把内置手册入库。  
 3. **检索**先多捞一些候选（召回）。**重排**再按「和问题对得上吗」精排，只留几段给生成器。  
 4. **生成**靠 Prompt 约束模型；**后处理**是模型写完之后的规则（补引用、空检索拒答），不是再改一遍 Prompt。
 """
@@ -218,12 +219,16 @@ def _step_intro() -> None:
 
 
 def _step_load() -> None:
-    docs = load_documents()
     _teach(
-        "Load 读取 `data/kb` 里的 Markdown、PDF、Word。PDF 按页、Word 按标题切成文档对象。这里还没有搜索。",
-        "生产环境还会碰到扫描件 OCR、加密 PDF、表格、页眉页脚噪音。本教室先覆盖可复制文本的 PDF/Word。",
-        "左侧点文件名。请打开带 pdf / docx 标记的制度文件，确认能看到「违约金」「挂失电话」。",
+        "知识库是磁盘上的文件：`data/kb` 里的 Markdown、PDF、Word，以及你现在上传的材料。Load 只负责读进来，变成文档对象。这里还没有搜索，也还没有向量。",
+        "真实文件应该加在这一步，而不是索引步。索引只是把「已经在知识库里的东西」切块、向量化、写入 Chroma。放错位置会让人以为向量库是另一个文件夹。",
+        "先点左侧一篇制度，确认能看到「违约金」「挂失电话」。再在下面上传自己的 PDF / Word / Markdown。上传后请到「切块」看长什么样，到「索引」点重建才会进检索。",
     )
+    _upload_panel()
+    docs = load_documents()
+    if not docs:
+        st.warning("知识库是空的。上传一份文件，或确认 `data/kb` 里有材料。")
+        return
     labels = []
     for doc in docs:
         src = Path(str(doc.metadata.get("source", ""))).name
@@ -240,6 +245,43 @@ def _step_load() -> None:
         doc = docs[labels.index(picked)]
         st.markdown(f"**{picked}** · {len(doc.page_content)} 字")
         st.text_area("原文", doc.page_content, height=360, label_visibility="collapsed")
+
+
+def _upload_panel() -> None:
+    st.markdown("#### 把真实文件放进知识库")
+    st.caption("支持 .pdf / .docx / .md / .txt。文件写入 `data/kb/uploads/`，属于 Load，还不等于已经能检索。")
+    uploaded = st.file_uploader(
+        "选择文件（可多选）",
+        type=["pdf", "docx", "md", "txt"],
+        accept_multiple_files=True,
+        key="kb_file_uploader",
+    )
+    if uploaded and st.button("保存到知识库", type="primary"):
+        saved = []
+        for item in uploaded:
+            path = save_uploaded_file(item.name, item.getvalue())
+            saved.append(path.name)
+        st.session_state.uploads_pending_index = True
+        st.success("已放入知识库：" + "、".join(saved) + "。下一步可看切块；要检索请到「索引」点重建。")
+        st.rerun()
+    existing = list_uploads()
+    if existing:
+        st.markdown("**已上传（可删除）**")
+        for path in existing:
+            left, right = st.columns((4, 1))
+            left.write(f"{path.name} · {path.stat().st_size} 字节")
+            if right.button("删除", key=f"del_upload_{path.name}"):
+                path.unlink()
+                st.session_state.uploads_pending_index = True
+                st.rerun()
+    if st.session_state.get("uploads_pending_index"):
+        st.warning("知识库文件有变动，向量库还是旧的。请到第 4 步「索引」点「按当前切块重建索引」。")
+    st.session_state.extra_note = st.text_area(
+        "可选：写一条只属于你的规定（仍是知识，会在重建索引时一并入库）",
+        value=st.session_state.extra_note,
+        placeholder="例如：星河银行大厅取号后超时 15 分钟需重新取号。",
+        height=90,
+    )
 
 
 def _step_split() -> None:
@@ -270,11 +312,13 @@ def _step_split() -> None:
 
 def _step_index() -> None:
     _teach(
-        "索引 = 切块后的文本变成向量，写入 **Chroma 向量数据库**（目录 `chroma_db/`）。不是再上传一份手册。打开教室时已自动入库。",
-        "专门数据库是为了按向量近邻检索。Chroma 是嵌入式向量库；银行生产更多用带权限和备份的 pgvector / Milvus。没有这一步，检索就是空仓库。",
-        "可以上传自己的 PDF / Word / Markdown。点下面预览：每条是一段原文 + 一串数字向量。云端上传重启可能丢失，长期请放进仓库 `data/kb/`。",
+        "索引 = 把知识库里已经有的文本变成向量，写入 **Chroma**（目录 `chroma_db/`）。不是再上传一份手册。打开教室时已自动把内置手册入库。",
+        "专门数据库是为了按向量近邻检索。Chroma 是嵌入式向量库。没有这一步，检索就是空仓库或还是旧文件。",
+        "真实文件请回到「知识库」步上传。这里只选向量后端，并点重建。点下面预览：每条是一段原文 + 一串数字。",
     )
-    st.info("Chroma 已经是向量数据库，只是文件落在本机目录，不是「没有数据库」。")
+    st.info("文件属于知识库；这一步只负责 Embed + Store。上传请点顶部「2. 知识库」。")
+    if st.session_state.get("uploads_pending_index"):
+        st.warning("知识库有新文件或删除尚未写入向量库，请点下面的「重建索引」。")
     use_hf = st.checkbox(
         "使用句向量模型（首次下载模型会较慢；依赖已写入 requirements.txt，Cloud 需 Reboot 后才装上）",
         value=config.EMBEDDING_BACKEND == "huggingface",
@@ -285,35 +329,7 @@ def _step_index() -> None:
     else:
         config.EMBEDDING_BACKEND = "hashed"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
-    st.markdown("#### 放入真实文件")
-    st.caption("支持 .pdf / .docx / .md / .txt。写入 `data/kb/uploads/`，然后请点重建索引。")
-    uploaded = st.file_uploader(
-        "选择文件（可多选）",
-        type=["pdf", "docx", "md", "txt"],
-        accept_multiple_files=True,
-    )
-    if uploaded and st.button("保存到知识库", type="primary"):
-        saved = []
-        for item in uploaded:
-            path = save_uploaded_file(item.name, item.getvalue())
-            saved.append(path.name)
-        st.success("已保存：" + "、".join(saved) + "。请再点「重建索引」才会进入向量库。")
-    existing = list_uploads()
-    if existing:
-        st.markdown("**已上传（可删除）**")
-        for path in existing:
-            left, right = st.columns((4, 1))
-            left.write(f"{path.name} · {path.stat().st_size} 字节")
-            if right.button("删除", key=f"del_upload_{path.name}"):
-                path.unlink()
-                st.rerun()
-    st.session_state.extra_note = st.text_area(
-        "可选：写一条只属于你的知识（会随索引一起入库，不覆盖手册）",
-        value=st.session_state.extra_note,
-        placeholder="例如：星河银行大厅取号后超时 15 分钟需重新取号。",
-        height=90,
-    )
-    if st.button("按当前切块重建索引", type="secondary"):
+    if st.button("按当前切块重建索引", type="primary"):
         extras = []
         note = st.session_state.extra_note.strip()
         if note:
@@ -332,6 +348,7 @@ def _step_index() -> None:
                     chunk_overlap=st.session_state.chunk_overlap,
                 )
             st.success("已重建。现在仓库里是当前切块与向量后端。")
+            st.session_state.uploads_pending_index = False
         except ImportError as exc:
             st.error(str(exc))
     stats = st.session_state.index_stats
