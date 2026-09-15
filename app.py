@@ -207,10 +207,13 @@ def _step_question() -> None:
     cols = st.columns(len(SAMPLE_QUESTIONS))
     for i, sample in enumerate(SAMPLE_QUESTIONS):
         with cols[i]:
-            if st.button(sample, use_container_width=True):
-                st.session_state.question = sample
-                st.session_state.step = 5
-                st.rerun()
+            st.button(
+                sample,
+                use_container_width=True,
+                on_click=_use_sample_question,
+                args=(sample,),
+                key=f"sample_q_{i}",
+            )
     terms = tokenize(st.session_state.question)
     st.markdown("**分词后用来检索的词**")
     if terms:
@@ -218,6 +221,12 @@ def _step_question() -> None:
         st.markdown(chips, unsafe_allow_html=True)
     else:
         st.info("分词结果为空，检索会什么都找不到。换几个实词再试。")
+
+
+def _use_sample_question(sample: str) -> None:
+    # 回调在下一轮渲染、创建 text_input 之前执行，避免改已实例化的 widget key。
+    st.session_state.question = sample
+    st.session_state.step = 5
 
 
 def _step_retrieve() -> None:
