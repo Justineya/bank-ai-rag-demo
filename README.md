@@ -42,6 +42,7 @@ Prompt + LLM / 抽取式回答    Generate
 
 ```
 data/kb/          知识库：Markdown + 住房贷款 PDF + 信用卡章程 Word
+data/kb/uploads/  上传的真实文件（默认不进 Git）
 scripts/          把 Markdown 导出成 PDF/Word
 data/terms.txt    jieba 用户词典（产品名）
 src/rag/          流水线源码，一文件一层
