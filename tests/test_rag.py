@@ -24,9 +24,15 @@ def test_load_and_split_sample_kb():
     assert len(docs) >= 5
     chunks = split_documents(docs)
     assert len(chunks) > len(docs)
+    types = {str(d.metadata.get("file_type")) for d in docs}
+    assert "md" in types
     joined = " ".join(d.page_content for d in docs)
     assert "星河活期" in joined
     assert "随心贷" in joined
+    assert "pdf" in types
+    assert "docx" in types
+    assert "违约金" in joined
+    assert "400-000-8888" in joined
 
 
 def test_hashed_embeddings_are_normalized_and_sensitive():
@@ -97,6 +103,10 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     prepay = ask("提前还房贷要不要违约金？", k=4)
     assert "违约金" in prepay.sources[0].page_content
 
+    pdf_q = ask("满三十六个月提前还款还收违约金吗？", k=4)
+    blob = " ".join(d.page_content for d in pdf_q.sources)
+    assert "违约金" in blob
+
     ranked = retrieve_ranked("随心贷能用来炒股吗？", k=2, retriever="bm25")
     assert ranked
     assert ranked[0]["score"] > 0
@@ -110,7 +120,7 @@ def test_build_index_accepts_extra_docs(tmp_path, monkeypatch):
 
     config.CHROMA_DIR = tmp_path / "chroma2"
     config.EMBEDDING_BACKEND = "hashed"
-    extra = [Document(page_content="## 学员补充\n大厅超时需重新取号。", metadata={"source": "user-note.md"})]
+    extra = [Document(page_content="## 学员补充\n大厅超时需重新取号。", metadata={"source": "user-note.md", "file_type": "md", "page": 1})]
     stats = build_index(reset=True, data_dir=KB, extra_docs=extra, chunk_size=400, chunk_overlap=40)
     assert stats["chunks"] >= 1
     ranked = retrieve_ranked("大厅超时怎么办？", k=3, retriever="bm25")

@@ -16,14 +16,19 @@ from rag import config
 from rag.embeddings import build_embeddings
 
 
+from rag.loaders import load_path
+
+
 def load_documents(data_dir: Path | None = None) -> list[Document]:
     directory = Path(data_dir or config.DATA_DIR)
-    paths = sorted(directory.glob("**/*.md")) + sorted(directory.glob("**/*.txt"))
-    docs = [
-        Document(page_content=path.read_text(encoding="utf-8"), metadata={"source": str(path)})
-        for path in paths
-        if path.is_file()
-    ]
+    all_files = [p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() in {".md", ".txt", ".pdf", ".docx"}]
+    office_stems = {p.stem for p in all_files if p.suffix.lower() in {".pdf", ".docx"}}
+    docs: list[Document] = []
+    for path in sorted(all_files):
+        # 有 PDF/Word 成品时不再重复读同名 Markdown（Markdown 只作导出源）。
+        if path.suffix.lower() in {".md", ".txt"} and path.stem in office_stems:
+            continue
+        docs.extend(load_path(path))
     if not docs:
         raise FileNotFoundError(f"知识库为空：{directory}")
     return docs
@@ -79,9 +84,9 @@ def build_index(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> dict:
-    docs = load_documents(data_dir)
-    if extra_docs:
-        docs = docs + extra_docs
+    extra = extra_docs or []
+    docs = load_documents(data_dir) + extra
+    file_types = sorted({str(d.metadata.get("file_type", "unknown")) for d in docs})
     chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     store = get_vectorstore(reset=reset)
     ids = store.add_documents(chunks)
@@ -91,6 +96,8 @@ def build_index(
         "ids": len(ids),
         "persist_directory": str(config.CHROMA_DIR),
         "embedding_backend": config.EMBEDDING_BACKEND,
+        "vector_store": "chroma",
+        "file_types": file_types,
     }
 
 
@@ -113,6 +120,7 @@ def ensure_index(
             "ids": n,
             "persist_directory": str(config.CHROMA_DIR),
             "embedding_backend": config.EMBEDDING_BACKEND,
+            "vector_store": "chroma",
             "rebuilt": False,
         }
     stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)

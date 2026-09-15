@@ -14,7 +14,6 @@ os.environ.setdefault("CHROMA_TELEMETRY", "False")
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.getenv("RAG_DATA_DIR", ROOT / "data" / "kb"))
 CHROMA_DIR = Path(os.getenv("RAG_CHROMA_DIR", ROOT / "chroma_db"))
-COLLECTION_NAME = os.getenv("RAG_COLLECTION", "bank_kb")
 
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "400"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
@@ -23,6 +22,7 @@ TOP_K = int(os.getenv("RAG_TOP_K", "4"))
 RETRIEVER = os.getenv("RAG_RETRIEVER", "bm25").lower()
 
 EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "hashed").lower()
+COLLECTION_NAME = os.getenv("RAG_COLLECTION", f"bank_kb_{EMBEDDING_BACKEND}")
 HF_EMBEDDING_MODEL = os.getenv(
     "HF_EMBEDDING_MODEL",
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",

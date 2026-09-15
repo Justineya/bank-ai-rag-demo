@@ -41,7 +41,8 @@ Prompt + LLM / 抽取式回答    Generate
 ## 目录
 
 ```
-data/kb/          银行知识库（储蓄 / 信用卡 / 贷款 / KYC / RAG 笔记）
+data/kb/          知识库：Markdown + 住房贷款 PDF + 信用卡章程 Word
+scripts/          把 Markdown 导出成 PDF/Word
 data/terms.txt    jieba 用户词典（产品名）
 src/rag/          流水线源码，一文件一层
   config.py       路径与模型

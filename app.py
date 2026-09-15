@@ -32,6 +32,7 @@ SAMPLE_QUESTIONS = [
     "信用卡还款日是哪天？",
     "随心贷能用来炒股吗？",
     "提前还房贷要不要违约金？",
+    "PDF 细则里满 36 个月提前还款还收违约金吗？",
     "明天股价会涨吗？",
 ]
 
@@ -155,15 +156,29 @@ def _step_intro() -> None:
         """
 #### 先记住三件事（后面每一步都在落实）
 
-1. **知识库**是人写好的 Markdown，模型事先没读过。  
-2. **索引**把手册切成小段放进仓库，提问时才能搜。你不用往里面「添加」产品——手册已经在仓库里，打开页面时会自动入库。  
-3. **检索**只取出几小段给生成器用。生成器看不见全文，所以排不到前面的段落等于不存在。
+1. **知识库**是 Markdown、PDF、Word 等文件，模型事先没读过。  
+2. **索引**把文件切段、向量化，写入 Chroma。你不用再贴一遍产品——打开页面会自动入库。  
+3. **检索**只取出几小段给生成器用。生成器看不见全文。
 """
     )
     c1, c2, c3 = st.columns(3)
-    c1.metric("知识库文档", "5 篇+", "储蓄 / 信用卡 / 贷款…")
-    c2.metric("默认检索", "BM25", "按词匹配，适合专有名词")
-    c3.metric("默认生成", "抽取原文", "没有 API Key 也能学")
+    c1.metric("知识库", "Markdown + PDF + Word")
+    c2.metric("向量库", "Chroma", "嵌入式向量数据库")
+    c3.metric("默认向量", "哈希(快)", "可换成句向量模型")
+    st.markdown(
+        """
+#### 这是「能跑通的完整流水线」，不是生产系统缩小版聊天框
+
+| | 本教室 | 生产常见做法 |
+| --- | --- | --- |
+| 文档 | md / 文本 PDF / docx | 再加扫描件 OCR、权限、版本 |
+| 向量化 | 默认字符哈希，秒级 | 句向量或商业 Embedding，分钟～小时 |
+| 存储 | **Chroma** 本地目录（就是向量库） | pgvector、Milvus、Pinecone 等 |
+| 生成 | Agnes 等 LLM + 检索上下文 | 同样，但有评测、缓存、审计 |
+
+默认哈希快，是为了让你先看懂步骤。真句向量会慢，因为每段都要过神经网络。
+"""
+    )
     st.markdown("#### 整条流水线")
     st.code(
         "文档 → 切块 → 写入仓库(索引) → 问题分词 → 检索 top-k → 填进 Prompt → 生成答案",
@@ -177,18 +192,24 @@ def _step_intro() -> None:
 def _step_load() -> None:
     docs = load_documents()
     _teach(
-        "Load 只是把 `data/kb` 里的 Markdown 读进内存：一篇文件 = 一个文档对象。这里还没有搜索，也没有答案。",
-        "后面所有检索都只能搜到这些字。如果利率写在储蓄手册里，你却只索引了别的文件，问利率就会失败。",
-        "左侧点文件名看原文。请先找到「0.20%」和「提前还款 / 违约金」分别在哪一篇，后面对照检索结果。",
+        "Load 读取 `data/kb` 里的 Markdown、PDF、Word。PDF 按页、Word 按标题切成文档对象。这里还没有搜索。",
+        "生产环境还会碰到扫描件 OCR、加密 PDF、表格、页眉页脚噪音。本教室先覆盖可复制文本的 PDF/Word。",
+        "左侧点文件名。请打开带 pdf / docx 标记的制度文件，确认能看到「违约金」「挂失电话」。",
     )
-    names = [Path(doc.metadata["source"]).name for doc in docs]
+    labels = []
+    for doc in docs:
+        src = Path(str(doc.metadata.get("source", ""))).name
+        ft = doc.metadata.get("file_type", "?")
+        page = doc.metadata.get("page", "")
+        labels.append(f"{src}  [{ft} · 第{page}页]")
     left, right = st.columns((1, 2))
     with left:
-        picked = st.radio("点一篇打开", names, index=0)
+        picked = st.radio("点一篇打开", labels, index=0)
         st.session_state.picked_source = picked
-        st.caption(f"一共 {len(docs)} 篇，全部会进入下一步切块。")
+        types = sorted({str(d.metadata.get("file_type")) for d in docs})
+        st.caption(f"共 {len(docs)} 个解析单元，格式：{', '.join(types)}")
     with right:
-        doc = next(d for d in docs if Path(d.metadata["source"]).name == picked)
+        doc = docs[labels.index(picked)]
         st.markdown(f"**{picked}** · {len(doc.page_content)} 字")
         st.text_area("原文", doc.page_content, height=360, label_visibility="collapsed")
 
@@ -221,11 +242,18 @@ def _step_split() -> None:
 
 def _step_index() -> None:
     _teach(
-        "索引 = 把切好的段落放进可搜索的仓库（Chroma）。不是让你再上传一份银行资料。打开教室时已经用手册自动建过一次。",
-        "没有索引时，检索对着空仓库，任何问题都是 0 条结果。这不是模型坏了，是还没有可搜的存货。",
-        "只有改了切块大小、或在下面写了自己的规定时，才需要点「重建索引」。日常提问不用再点。",
+        "索引 = 切块后的文本变成向量，写入 **Chroma 向量数据库**（目录 `chroma_db/`）。不是再上传一份手册。打开教室时已自动入库。",
+        "专门数据库是为了按向量近邻检索。Chroma 是嵌入式向量库；银行生产更多用带权限和备份的 pgvector / Milvus。没有这一步，检索就是空仓库。",
+        "日常提问不用点重建。改切块、或勾选「句向量」后才重建。句向量第一次会下载模型，会明显变慢。",
     )
-    st.info("你不需要「添加」星河银行手册。它已经在 `data/kb`。索引只是把这些文件做成可搜索状态。")
+    st.info("Chroma 已经是向量数据库，只是文件落在本机目录，不是「没有数据库」。")
+    use_hf = st.checkbox("使用句向量模型（慢，接近生产；需已安装 sentence-transformers）", value=config.EMBEDDING_BACKEND == "huggingface")
+    if use_hf:
+        config.EMBEDDING_BACKEND = "huggingface"
+        config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
+    else:
+        config.EMBEDDING_BACKEND = "hashed"
+        config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
     st.session_state.extra_note = st.text_area(
         "可选：写一条只属于你的知识（会随索引一起入库，不覆盖手册）",
         value=st.session_state.extra_note,
@@ -236,21 +264,32 @@ def _step_index() -> None:
         extras = []
         note = st.session_state.extra_note.strip()
         if note:
-            extras.append(Document(page_content=f"## 学员补充\n{note}", metadata={"source": "user-note.md"}))
-        with st.spinner("切块、向量化、写入 Chroma…"):
-            st.session_state.index_stats = build_index(
-                reset=True,
-                extra_docs=extras or None,
-                chunk_size=st.session_state.chunk_size,
-                chunk_overlap=st.session_state.chunk_overlap,
+            extras.append(
+                Document(
+                    page_content=f"## 学员补充\n{note}",
+                    metadata={"source": "user-note.md", "file_type": "md", "page": 1},
+                )
             )
-        st.success("已重建。现在仓库里是当前切块设置（以及你写的补充，如果有）。")
+        try:
+            with st.spinner("切块、向量化、写入向量库 Chroma（句向量会较慢）…"):
+                st.session_state.index_stats = build_index(
+                    reset=True,
+                    extra_docs=extras or None,
+                    chunk_size=st.session_state.chunk_size,
+                    chunk_overlap=st.session_state.chunk_overlap,
+                )
+            st.success("已重建。现在仓库里是当前切块与向量后端。")
+        except ImportError as exc:
+            st.error(str(exc))
     stats = st.session_state.index_stats
     if stats:
         a, b, c = st.columns(3)
         a.metric("文档", stats["documents"])
         b.metric("chunk", stats["chunks"])
-        c.metric("embedding", stats["embedding_backend"])
+        c.metric("向量库", stats.get("vector_store", "chroma"))
+        types = stats.get("file_types") or []
+        if types:
+            st.caption("已解析格式：" + "、".join(types))
         st.caption(f"落盘目录：`{stats['persist_directory']}`")
     else:
         st.caption("仓库已有内容。不必再点重建，除非你改了切块或写了补充规定。")
