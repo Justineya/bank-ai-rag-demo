@@ -106,3 +106,32 @@ python -m pytest -q
 ```
 
 测试使用临时 Chroma 目录和哈希向量，不调用外部 LLM。
+
+## 可以部署到哪里（不改架构）
+
+这套教室是 **Streamlit 常驻进程**（WebSocket + 本地 Chroma）。Vercel 只有无服务器函数，跑不了，也不该为此改成静态页。
+
+能原样部署的地方：
+
+| 平台 | 适合原因 |
+| --- | --- |
+| [Streamlit Community Cloud](https://share.streamlit.io) | 官方免费托管，指向本仓库的 `app.py` 即可 |
+| [Hugging Face Spaces](https://huggingface.co/spaces)（SDK 选 Streamlit） | 同样跑 `app.py`，不改代码 |
+| Render / Railway / Fly.io | 用仓库里的 `Dockerfile` 起容器 |
+
+### Streamlit Cloud（最省事）
+
+1. 把 PR 合并进 `main`，或在 Cloud 里选分支 `cursor/rag-from-scratch-demo-f62d`
+2. 打开 https://share.streamlit.io → New app → 选 `Justineya/bank-ai-rag-demo`
+3. Main file 填 `app.py`
+4. 可选：在 Secrets 里加 `OPENAI_API_KEY` / `GROQ_API_KEY`（没有也能用抽取式回答）
+
+### Docker（Render / 自己的机器）
+
+```bash
+docker build -t bank-rag .
+docker run -p 8501:8501 bank-rag
+```
+
+云端容器请把端口映射到平台提供的 `PORT`（镜像已读取该环境变量）。
+
