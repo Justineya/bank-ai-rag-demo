@@ -13,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from rag import config
 from rag.retrieve import format_context
+from rag.textutil import lexical_overlap
 
 SYSTEM_PROMPT = """你是星河银行的知识库助手。只能根据给定资料回答。
 如果资料里没有答案，明确说「资料中没有提到」，不要编造利率、额度或电话。
@@ -24,30 +25,18 @@ class Generator(Protocol):
 
 
 class ExtractiveGenerator:
-    """把与问题词重叠最多的句子抽出来，用于无 Key 环境。"""
+    """无 LLM 时：用 n-gram 挑一句摘要，并附上 top-1 chunk 原文。"""
 
     def generate(self, question: str, docs: list[Document]) -> str:
         if not docs:
             return "知识库里没有检索到相关段落，请先运行索引或换一个问法。"
-        scored: list[tuple[float, int, str]] = []
-        query_tokens = _tokens(question)
-        for i, doc in enumerate(docs, start=1):
-            for sent in _sentences(doc.page_content):
-                overlap = len(query_tokens & _tokens(sent))
-                if overlap:
-                    scored.append((overlap / (1 + abs(len(sent) - 24)), i, sent))
-        if not scored:
-            preview = docs[0].page_content.strip().replace("\n", " ")
-            return f"未找到高度重合的句子，最相关片段如下：{preview[:180]} (资料1)"
-        scored.sort(key=lambda x: x[0], reverse=True)
-        used_sents: list[str] = []
-        cites: list[int] = []
-        for _, idx, sent in scored[:3]:
-            if sent not in used_sents:
-                used_sents.append(sent)
-                cites.append(idx)
-        cite = " ".join(f"(资料{i})" for i in dict.fromkeys(cites))
-        return " ".join(used_sents) + f" {cite}"
+        top = docs[0].page_content.strip()
+        sentences = [s for s in _sentences(top) if not s.startswith("#")]
+        highlight = ""
+        if sentences:
+            highlight = max(sentences, key=lambda s: lexical_overlap(question, s))
+        summary = f"摘要：{highlight}\n\n" if highlight else ""
+        return f"{summary}依据原文：\n{top}\n\n（未调用 LLM，以上为检索片段） (资料1)"
 
 
 class ChatModelGenerator:
@@ -87,11 +76,6 @@ def build_generator() -> tuple[Generator, str]:
         )
         return ChatModelGenerator(llm), f"groq:{config.GROQ_MODEL}"
     return ExtractiveGenerator(), "extractive"
-
-
-def _tokens(text: str) -> set[str]:
-    parts = re.findall(r"[\u4e00-\u9fff]|[a-zA-Z0-9]+", text.lower())
-    return {p for p in parts if p.strip()}
 
 
 def _sentences(text: str) -> list[str]:

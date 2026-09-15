@@ -10,9 +10,14 @@ from rag.generate import ExtractiveGenerator
 from rag.ingest import load_documents, split_documents
 from rag.pipeline import ask
 from rag.retrieve import format_context
-
+from rag.textutil import tokenize
 
 KB = Path(__file__).resolve().parents[1] / "data" / "kb"
+
+
+def test_domain_terms_tokenize():
+    assert "随心贷" in tokenize("随心贷能用来炒股吗？")
+    assert "活期" in tokenize("活期利率是多少？")
 
 
 def test_load_and_split_sample_kb():
@@ -38,12 +43,12 @@ def test_hashed_embeddings_are_normalized_and_sensitive():
 
 def test_extractive_generator_cites_sources():
     docs = [
-        Document(page_content="星河活期年利率：0.20%。随时存取。"),
+        Document(page_content="## 活期储蓄\n星河活期年利率：0.20%。随时存取。"),
         Document(page_content="信用卡账单日是每月 8 日。"),
     ]
     answer = ExtractiveGenerator().generate("活期年利率是多少", docs)
     assert "0.20%" in answer
-    assert "资料" in answer
+    assert "资料1" in answer
 
 
 def test_format_context_includes_index():
@@ -65,6 +70,7 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     config.CHROMA_DIR = tmp_path / "chroma"
     config.DATA_DIR = KB
     config.EMBEDDING_BACKEND = "hashed"
+    config.RETRIEVER = "bm25"
     config.OPENAI_API_KEY = ""
     config.GROQ_API_KEY = ""
 
@@ -74,6 +80,15 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     result = ask("星河活期的年利率是多少？", k=4)
     assert result.sources
     assert result.generator == "extractive"
-    # hashed embedding + 专有名词应能找回储蓄文档
-    blob = " ".join(d.page_content for d in result.sources)
-    assert "活期" in blob or "0.20%" in result.answer
+    assert "0.20%" in result.sources[0].page_content
+    assert "活期" in result.sources[0].page_content
+
+    demand = ask("活期利率是多少？", k=4)
+    assert "0.20%" in demand.sources[0].page_content
+
+    card = ask("信用卡还款日是哪天？", k=4)
+    assert "26" in card.sources[0].page_content
+
+    loan = ask("随心贷能用来炒股吗？", k=4)
+    assert "随心贷" in loan.sources[0].page_content
+    assert "股市" in loan.sources[0].page_content or "不可用于" in loan.sources[0].page_content

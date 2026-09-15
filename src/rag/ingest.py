@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from langchain_chroma import Chroma
@@ -29,13 +30,24 @@ def load_documents(data_dir: Path | None = None) -> list[Document]:
 
 
 def split_documents(docs: list[Document]) -> list[Document]:
-    # 中文没有空格分词，所以分隔符里加入常见标点，避免整篇落进一个 chunk。
+    # 先按二级标题切开，保证「活期」「随心贷」不会挤在同一个 chunk 里。
+    sections: list[Document] = []
+    for doc in docs:
+        parts = re.split(r"(?=^## )", doc.page_content, flags=re.MULTILINE)
+        for part in parts:
+            text = part.strip()
+            if not text:
+                continue
+            lines = [ln for ln in text.splitlines() if ln.strip()]
+            if len(lines) <= 1 and text.startswith("#"):
+                continue
+            sections.append(Document(page_content=text, metadata=doc.metadata.copy()))
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=config.CHUNK_SIZE,
         chunk_overlap=config.CHUNK_OVERLAP,
         separators=["\n\n", "\n", "。", "；", "，", " ", ""],
     )
-    return splitter.split_documents(docs)
+    return splitter.split_documents(sections)
 
 
 def get_vectorstore(reset: bool = False) -> Chroma:

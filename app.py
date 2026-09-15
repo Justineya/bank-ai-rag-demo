@@ -19,6 +19,7 @@ with st.sidebar:
     st.subheader("索引")
     st.write(f"知识库目录：`data/kb`")
     st.write(f"Embedding：`{config.EMBEDDING_BACKEND}`")
+    st.write(f"检索：`{config.RETRIEVER}`")
     top_k = st.slider("检索条数 top-k", 1, 8, config.TOP_K)
     if st.button("重建索引", type="primary"):
         with st.spinner("正在切分并写入 Chroma…"):
@@ -34,11 +35,10 @@ with st.sidebar:
     )
 
 question = st.text_input("问知识库", placeholder="例如：提前还房贷要不要违约金？")
-submit = st.button("检索并生成", type="secondary")
 
-if submit and not question:
-    st.warning("请先输入问题。")
-elif question and submit:
+if not question:
+    st.info("建议路径：左侧重建索引 → 输入问题并回车 → 对照右侧资料看答案是否忠实。")
+else:
     try:
         result = ask(question, k=top_k)
     except Exception as exc:
@@ -56,5 +56,3 @@ elif question and submit:
                 src = Path(str(doc.metadata.get("source", ""))).name
                 with st.expander(f"资料{i} · {src}", expanded=(i == 1)):
                     st.write(doc.page_content)
-elif not question:
-    st.info("建议路径：左侧重建索引 → 输入问题 → 对照右侧资料看答案是否忠实。")

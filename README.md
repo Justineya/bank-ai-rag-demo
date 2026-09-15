@@ -22,7 +22,7 @@
 Chroma 向量库
     │  Store
     ▼
-问题 → top-k chunk          Retrieve
+问题 → BM25 / 向量 top-k     Retrieve
     │
     ▼
 Prompt + LLM / 抽取式回答    Generate
@@ -32,7 +32,7 @@ Prompt + LLM / 抽取式回答    Generate
 | --- | --- | --- |
 | 框架 | LangChain LCEL 风格的模块拆分 | LlamaIndex、自写 cosine |
 | 切块 | `RecursiveCharacterTextSplitter` | 按标题 / 按 token |
-| Embedding | 默认哈希向量（零下载） | `paraphrase-multilingual-MiniLM`、OpenAI |
+| 检索 | 默认 BM25（jieba 分词） | Chroma 向量检索 `RAG_RETRIEVER=vector` |
 | 向量库 | Chroma（本地目录） | FAISS、pgvector |
 | 生成 | 无 Key 时抽取式；有 Key 用 OpenAI / Groq | Ollama 本地模型 |
 
@@ -75,11 +75,12 @@ streamlit run app.py
 
 1. 打开 `data/kb`，看知识库长什么样。
 2. 读 `src/rag/ingest.py`：切块大小 `CHUNK_SIZE=400`、重叠 `80` 会怎样影响检索。
-3. 读 `src/rag/embeddings.py`：哈希向量如何把 n-gram 投到固定维度。
+3. 读 `src/rag/embeddings.py` 与 `src/rag/textutil.py`：先理解 BM25，再对比哈希向量。
 4. 运行 `python cli.py --rebuild` 后看 `chroma_db/` 是否生成。
 5. 读 `src/rag/generate.py`：对比抽取式回答和 Chat Prompt。
-6. 把 `.env` 里 `EMBEDDING_BACKEND=huggingface`，安装 `sentence-transformers` 与 `langchain-huggingface`，再重建索引，对比中文语义检索差异。
-7. 换一篇自己的 Markdown 放进 `data/kb`，重建索引，问新问题。
+6. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
+7. 把 `.env` 里 `EMBEDDING_BACKEND=huggingface`，安装 `sentence-transformers` 与 `langchain-huggingface`，再对比中文语义检索。
+8. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
 
 ## 测试
 
