@@ -10,7 +10,5 @@ streamlit>=1.38.0
 pypdf>=4.0.0
 python-docx>=1.1.0
 reportlab>=4.0.0
-
-# 可选：把 EMBEDDING_BACKEND=huggingface 后取消注释
-# langchain-huggingface>=0.1.0
-# sentence-transformers>=3.0.0
+langchain-huggingface>=0.1.0
+sentence-transformers>=3.0.0

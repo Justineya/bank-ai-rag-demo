@@ -247,7 +247,10 @@ def _step_index() -> None:
         "日常提问不用点重建。改切块、或勾选「句向量」后才重建。句向量第一次会下载模型，会明显变慢。",
     )
     st.info("Chroma 已经是向量数据库，只是文件落在本机目录，不是「没有数据库」。")
-    use_hf = st.checkbox("使用句向量模型（慢，接近生产；需已安装 sentence-transformers）", value=config.EMBEDDING_BACKEND == "huggingface")
+    use_hf = st.checkbox(
+        "使用句向量模型（首次下载模型会较慢；依赖已写入 requirements.txt，Cloud 需 Reboot 后才装上）",
+        value=config.EMBEDDING_BACKEND == "huggingface",
+    )
     if use_hf:
         config.EMBEDDING_BACKEND = "huggingface"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"

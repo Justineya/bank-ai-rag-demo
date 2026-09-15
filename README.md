@@ -97,7 +97,7 @@ python cli.py "活期利率是多少？"
 4. 运行 `python cli.py --rebuild` 后看 `chroma_db/` 是否生成。
 5. 读 `src/rag/generate.py`：对比抽取式回答和 Chat Prompt。
 6. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
-7. 把 `.env` 里 `EMBEDDING_BACKEND=huggingface`，安装 `sentence-transformers` 与 `langchain-huggingface`，再对比中文语义检索。
+7. 索引页勾选「句向量」：Cloud 会按 `requirements.txt` 安装 `sentence-transformers`，第一次重建索引会下载模型，可能要等几分钟。
 8. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
 
 ## 测试

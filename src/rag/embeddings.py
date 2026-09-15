@@ -55,8 +55,8 @@ def build_embeddings() -> Embeddings:
             from langchain_huggingface import HuggingFaceEmbeddings
         except ImportError as exc:
             raise ImportError(
-                "句向量需要安装 sentence-transformers 与 langchain-huggingface。"
-                "未安装时请把 EMBEDDING_BACKEND 保持为 hashed。"
+                "句向量依赖未安装。Streamlit Cloud 只安装仓库里 requirements.txt 列出的包；"
+                "请确认该文件含 sentence-transformers 与 langchain-huggingface，并在 Cloud 里 Reboot 重新安装。"
             ) from exc
         return HuggingFaceEmbeddings(model_name=config.HF_EMBEDDING_MODEL)
     return HashedNgramEmbeddings()
