@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -126,3 +127,65 @@ def ensure_index(
     stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     stats["rebuilt"] = True
     return stats
+
+
+ALLOWED_UPLOAD_SUFFIXES = {".md", ".txt", ".pdf", ".docx"}
+
+
+def _upload_dir() -> Path:
+    return Path(os.getenv("RAG_UPLOAD_DIR", Path(config.DATA_DIR) / "uploads"))
+
+
+def save_uploaded_file(filename: str, data: bytes) -> Path:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+        raise ValueError(f"不支持 {suffix}，请上传 md / txt / pdf / docx。")
+    folder = _upload_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]+", "_", Path(filename).stem)[:80] or "file"
+    dest = folder / f"{stem}{suffix}"
+    dest.write_bytes(data)
+    return dest
+
+
+def list_uploads() -> list[Path]:
+    folder = _upload_dir()
+    if not folder.exists():
+        return []
+    return sorted(
+        p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED_UPLOAD_SUFFIXES
+    )
+
+
+def preview_vectors(limit: int = 15, offset: int = 0) -> dict:
+    store = get_vectorstore(reset=False)
+    raw = store.get(include=["documents", "metadatas", "embeddings"])
+    ids = raw.get("ids") or []
+    documents = raw.get("documents") or []
+    metadatas = raw.get("metadatas") or []
+    embeddings = raw.get("embeddings")
+    if embeddings is None:
+        embeddings = []
+    dim = len(embeddings[0]) if len(embeddings) else 0
+    rows = []
+    end = min(offset + limit, len(ids))
+    for i in range(offset, end):
+        meta = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
+        vec = [float(x) for x in embeddings[i]] if i < len(embeddings) else []
+        text = documents[i] if i < len(documents) else ""
+        norm = sum(x * x for x in vec) ** 0.5 if vec else 0.0
+        rows.append(
+            {
+                "id": ids[i],
+                "source": Path(str(meta.get("source", ""))).name,
+                "file_type": meta.get("file_type", ""),
+                "page": meta.get("page", ""),
+                "chars": len(text or ""),
+                "dim": len(vec),
+                "norm": round(norm, 4),
+                "vector_head": [round(x, 4) for x in vec[:12]],
+                "preview": (text or "").replace("\n", " ")[:160],
+                "text": text,
+            }
+        )
+    return {"total": len(ids), "dim": dim, "backend": config.EMBEDDING_BACKEND, "rows": rows}

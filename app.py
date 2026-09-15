@@ -13,7 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
 from rag.generate import preview_prompt, build_generator
-from rag.ingest import build_index, ensure_index, load_documents, split_documents
+from rag.ingest import (
+    build_index,
+    ensure_index,
+    list_uploads,
+    load_documents,
+    preview_vectors,
+    save_uploaded_file,
+    split_documents,
+)
 from rag.retrieve import retrieve_ranked
 from rag.textutil import tokenize
 
@@ -244,7 +252,7 @@ def _step_index() -> None:
     _teach(
         "索引 = 切块后的文本变成向量，写入 **Chroma 向量数据库**（目录 `chroma_db/`）。不是再上传一份手册。打开教室时已自动入库。",
         "专门数据库是为了按向量近邻检索。Chroma 是嵌入式向量库；银行生产更多用带权限和备份的 pgvector / Milvus。没有这一步，检索就是空仓库。",
-        "日常提问不用点重建。改切块、或勾选「句向量」后才重建。句向量第一次会下载模型，会明显变慢。",
+        "可以上传自己的 PDF / Word / Markdown。点下面预览：每条是一段原文 + 一串数字向量。云端上传重启可能丢失，长期请放进仓库 `data/kb/`。",
     )
     st.info("Chroma 已经是向量数据库，只是文件落在本机目录，不是「没有数据库」。")
     use_hf = st.checkbox(
@@ -257,6 +265,28 @@ def _step_index() -> None:
     else:
         config.EMBEDDING_BACKEND = "hashed"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
+    st.markdown("#### 放入真实文件")
+    st.caption("支持 .pdf / .docx / .md / .txt。写入 `data/kb/uploads/`，然后请点重建索引。")
+    uploaded = st.file_uploader(
+        "选择文件（可多选）",
+        type=["pdf", "docx", "md", "txt"],
+        accept_multiple_files=True,
+    )
+    if uploaded and st.button("保存到知识库", type="primary"):
+        saved = []
+        for item in uploaded:
+            path = save_uploaded_file(item.name, item.getvalue())
+            saved.append(path.name)
+        st.success("已保存：" + "、".join(saved) + "。请再点「重建索引」才会进入向量库。")
+    existing = list_uploads()
+    if existing:
+        st.markdown("**已上传（可删除）**")
+        for path in existing:
+            left, right = st.columns((4, 1))
+            left.write(f"{path.name} · {path.stat().st_size} 字节")
+            if right.button("删除", key=f"del_upload_{path.name}"):
+                path.unlink()
+                st.rerun()
     st.session_state.extra_note = st.text_area(
         "可选：写一条只属于你的知识（会随索引一起入库，不覆盖手册）",
         value=st.session_state.extra_note,
@@ -294,8 +324,36 @@ def _step_index() -> None:
         if types:
             st.caption("已解析格式：" + "、".join(types))
         st.caption(f"落盘目录：`{stats['persist_directory']}`")
-    else:
-        st.caption("仓库已有内容。不必再点重建，除非你改了切块或写了补充规定。")
+
+    st.markdown("#### 预览向量库")
+    st.caption("每条记录 = 一段原文 + 对应的浮点向量。下面只显示前 12 维，避免刷屏。")
+    try:
+        preview = preview_vectors(limit=20, offset=0)
+    except Exception as exc:
+        st.warning(f"还读不出向量：{exc}")
+        preview = None
+    if preview and preview["total"]:
+        st.write(f"共 {preview['total']} 条，向量维度 {preview['dim']}，后端 `{preview['backend']}`")
+        table = [
+            {
+                "来源": row["source"],
+                "类型": row["file_type"],
+                "页": row["page"],
+                "字数": row["chars"],
+                "维度": row["dim"],
+                "模长": row["norm"],
+                "前12维": str(row["vector_head"]),
+                "原文开头": row["preview"],
+            }
+            for row in preview["rows"]
+        ]
+        st.dataframe(table, hide_index=True, use_container_width=True)
+        for i, row in enumerate(preview["rows"][:8]):
+            with st.expander(f"完整原文 · {row['source']} · dim={row['dim']}", expanded=(i == 0)):
+                st.write(row["text"])
+                st.code(str(row["vector_head"]) + (" …" if row["dim"] > 12 else ""))
+    elif preview is not None:
+        st.info("向量库暂时是空的，请先重建索引。")
 
 
 def _step_question() -> None:

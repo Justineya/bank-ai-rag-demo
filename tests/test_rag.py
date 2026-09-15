@@ -128,6 +128,31 @@ def test_build_index_accepts_extra_docs(tmp_path, monkeypatch):
     assert "超时" in ranked[0]["doc"].page_content
 
 
+def test_upload_and_preview_vectors(tmp_path, monkeypatch):
+    kb = tmp_path / "kb"
+    kb.mkdir()
+    (kb / "base.md").write_text("## 活期\n星河活期年利率 0.20%。\n", encoding="utf-8")
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma3"))
+    monkeypatch.setenv("RAG_DATA_DIR", str(kb))
+    from rag import config
+    from rag.ingest import build_index, preview_vectors, save_uploaded_file
+
+    config.CHROMA_DIR = tmp_path / "chroma3"
+    config.DATA_DIR = kb
+    config.EMBEDDING_BACKEND = "hashed"
+    saved = save_uploaded_file("内部制度.md", "## 夜班\n夜间大额转账需人工复核。\n".encode("utf-8"))
+    assert saved.exists()
+    stats = build_index(reset=True, data_dir=kb)
+    preview = preview_vectors(limit=20)
+    assert preview["total"] == stats["chunks"]
+    assert preview["dim"] > 0
+    assert preview["rows"]
+    assert preview["rows"][0]["vector_head"]
+    blob = " ".join(row["text"] for row in preview["rows"])
+    assert "0.20%" in blob
+    assert "夜间大额" in blob
+
+
 def test_build_generator_uses_agnes_when_key_present(monkeypatch):
     monkeypatch.setenv("AGNES_API_KEY", "sk-test-agnes")
     monkeypatch.setenv("OPENAI_API_KEY", "")

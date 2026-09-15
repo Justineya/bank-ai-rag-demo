@@ -13,6 +13,7 @@ os.environ.setdefault("CHROMA_TELEMETRY", "False")
 
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.getenv("RAG_DATA_DIR", ROOT / "data" / "kb"))
+UPLOAD_DIR = Path(os.getenv("RAG_UPLOAD_DIR", DATA_DIR / "uploads"))
 CHROMA_DIR = Path(os.getenv("RAG_CHROMA_DIR", ROOT / "chroma_db"))
 
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "400"))
