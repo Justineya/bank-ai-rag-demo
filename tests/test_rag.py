@@ -8,7 +8,7 @@ from rag.embeddings import HashedNgramEmbeddings
 from rag.generate import ExtractiveGenerator
 from rag.ingest import load_documents, split_documents
 from rag.pipeline import ask
-from rag.retrieve import format_context
+from rag.retrieve import format_context, retrieve_ranked
 from rag.textutil import tokenize
 
 KB = Path(__file__).resolve().parents[1] / "data" / "kb"
@@ -91,3 +91,23 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     loan = ask("随心贷能用来炒股吗？", k=4)
     assert "随心贷" in loan.sources[0].page_content
     assert "股市" in loan.sources[0].page_content or "不可用于" in loan.sources[0].page_content
+
+    ranked = retrieve_ranked("随心贷能用来炒股吗？", k=2, retriever="bm25")
+    assert ranked
+    assert ranked[0]["score"] > 0
+    assert "随心贷" in ranked[0]["matched"]
+
+
+def test_build_index_accepts_extra_docs(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma2"))
+    from rag import config
+    from rag.ingest import build_index
+
+    config.CHROMA_DIR = tmp_path / "chroma2"
+    config.EMBEDDING_BACKEND = "hashed"
+    extra = [Document(page_content="## 学员补充\n大厅超时需重新取号。", metadata={"source": "user-note.md"})]
+    stats = build_index(reset=True, data_dir=KB, extra_docs=extra, chunk_size=400, chunk_overlap=40)
+    assert stats["chunks"] >= 1
+    ranked = retrieve_ranked("大厅超时怎么办？", k=3, retriever="bm25")
+    assert ranked
+    assert "超时" in ranked[0]["doc"].page_content

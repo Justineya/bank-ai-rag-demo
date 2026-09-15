@@ -72,22 +72,41 @@ class BM25Index:
         n = len(docs)
         self.idf = {term: math.log((n - freq + 0.5) / (freq + 0.5) + 1) for term, freq in df.items()}
 
-    def search(self, query: str, k: int) -> list[Document]:
+    def ranked_search(self, query: str, k: int) -> list[dict]:
         q_terms = tokenize(query)
-        scored: list[tuple[float, int]] = []
+        scored: list[tuple[float, int, set[str]]] = []
         for i, tokens in enumerate(self._tokenized):
             tf = Counter(tokens)
             dl = len(tokens) or 1
             score = 0.0
+            matched: set[str] = set()
             for term in q_terms:
                 if term not in tf:
                     continue
+                matched.add(term)
                 idf = self.idf.get(term, 0.0)
                 freq = tf[term]
                 denom = freq + self.k1 * (1 - self.b + self.b * dl / (self.avgdl or 1))
                 score += idf * freq * (self.k1 + 1) / denom
             header = tokenize(self.docs[i].page_content.split("\n", 1)[0])
-            score += sum(self.idf.get(term, 0.0) * 2.0 for term in q_terms if term in header)
-            scored.append((score, i))
+            header_hits = {term for term in q_terms if term in header}
+            score += sum(self.idf.get(term, 0.0) * 2.0 for term in header_hits)
+            matched |= header_hits
+            scored.append((score, i, matched))
         scored.sort(reverse=True)
-        return [self.docs[i] for score, i in scored[:k] if score > 0]
+        results = []
+        for score, i, matched in scored[:k]:
+            if score <= 0:
+                continue
+            results.append(
+                {
+                    "score": round(score, 4),
+                    "doc": self.docs[i],
+                    "matched": sorted(matched, key=len, reverse=True),
+                    "query_terms": q_terms,
+                }
+            )
+        return results
+
+    def search(self, query: str, k: int) -> list[Document]:
+        return [item["doc"] for item in self.ranked_search(query, k)]

@@ -29,7 +29,11 @@ def load_documents(data_dir: Path | None = None) -> list[Document]:
     return docs
 
 
-def split_documents(docs: list[Document]) -> list[Document]:
+def split_documents(
+    docs: list[Document],
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[Document]:
     # 先按二级标题切开，保证「活期」「随心贷」不会挤在同一个 chunk 里。
     sections: list[Document] = []
     for doc in docs:
@@ -43,8 +47,8 @@ def split_documents(docs: list[Document]) -> list[Document]:
                 continue
             sections.append(Document(page_content=text, metadata=doc.metadata.copy()))
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=config.CHUNK_SIZE,
-        chunk_overlap=config.CHUNK_OVERLAP,
+        chunk_size=chunk_size or config.CHUNK_SIZE,
+        chunk_overlap=chunk_overlap if chunk_overlap is not None else config.CHUNK_OVERLAP,
         separators=["\n\n", "\n", "。", "；", "，", " ", ""],
     )
     return splitter.split_documents(sections)
@@ -68,9 +72,17 @@ def get_vectorstore(reset: bool = False) -> Chroma:
     return store
 
 
-def build_index(reset: bool = True, data_dir: Path | None = None) -> dict:
+def build_index(
+    reset: bool = True,
+    data_dir: Path | None = None,
+    extra_docs: list[Document] | None = None,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> dict:
     docs = load_documents(data_dir)
-    chunks = split_documents(docs)
+    if extra_docs:
+        docs = docs + extra_docs
+    chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     store = get_vectorstore(reset=reset)
     ids = store.add_documents(chunks)
     return {

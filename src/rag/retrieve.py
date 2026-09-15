@@ -10,27 +10,46 @@ from langchain_core.documents import Document
 
 from rag import config
 from rag.ingest import get_vectorstore
-from rag.textutil import BM25Index, lexical_overlap
+from rag.textutil import BM25Index, lexical_overlap, tokenize
 
 
-def retrieve(question: str, k: int | None = None) -> list[Document]:
-    top_k = k or config.TOP_K
+def _all_docs() -> list[Document]:
     store = get_vectorstore(reset=False)
     raw = store.get(include=["documents", "metadatas"])
-    docs = [
+    return [
         Document(page_content=text, metadata=meta or {})
         for text, meta in zip(raw.get("documents") or [], raw.get("metadatas") or [])
     ]
+
+
+def retrieve_ranked(question: str, k: int | None = None, retriever: str | None = None) -> list[dict]:
+    top_k = k or config.TOP_K
+    docs = _all_docs()
     if not docs:
         return []
-
-    if config.RETRIEVER == "vector":
+    mode = (retriever or config.RETRIEVER).lower()
+    if mode == "vector":
+        store = get_vectorstore(reset=False)
         fetch_k = min(max(top_k * 4, top_k), len(docs))
         candidates = store.similarity_search(question, k=fetch_k)
-        ranked = sorted(candidates, key=lambda doc: lexical_overlap(question, doc.page_content), reverse=True)
+        ranked = []
+        for doc in candidates:
+            terms = set(tokenize(question)) & set(tokenize(doc.page_content))
+            ranked.append(
+                {
+                    "score": round(lexical_overlap(question, doc.page_content), 4),
+                    "doc": doc,
+                    "matched": sorted(terms, key=len, reverse=True),
+                    "query_terms": tokenize(question),
+                }
+            )
+        ranked.sort(key=lambda item: item["score"], reverse=True)
         return ranked[:top_k]
+    return BM25Index(docs).ranked_search(question, top_k)
 
-    return BM25Index(docs).search(question, top_k)
+
+def retrieve(question: str, k: int | None = None) -> list[Document]:
+    return [item["doc"] for item in retrieve_ranked(question, k=k)]
 
 
 def format_context(docs: list[Document]) -> str:

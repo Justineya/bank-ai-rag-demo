@@ -55,6 +55,16 @@ class ChatModelGenerator:
         return result.content if hasattr(result, "content") else str(result)
 
 
+def preview_prompt(question: str, docs: list[Document]) -> str:
+    context = format_context(docs)
+    return (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"资料：\n{context}\n\n"
+        f"问题：{question}\n\n"
+        "请作答。"
+    )
+
+
 def build_generator() -> tuple[Generator, str]:
     if config.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
