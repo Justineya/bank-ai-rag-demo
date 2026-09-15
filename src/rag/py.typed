@@ -1,0 +1,1 @@
+"""Compatibility shim so `python -m pytest` and `import rag` both work."""

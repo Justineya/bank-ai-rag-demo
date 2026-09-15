@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from langchain_core.documents import Document
+
+from rag.embeddings import HashedNgramEmbeddings
+from rag.generate import ExtractiveGenerator
+from rag.ingest import load_documents, split_documents
+from rag.pipeline import ask
+from rag.retrieve import format_context
+
+
+KB = Path(__file__).resolve().parents[1] / "data" / "kb"
+
+
+def test_load_and_split_sample_kb():
+    docs = load_documents(KB)
+    assert len(docs) >= 5
+    chunks = split_documents(docs)
+    assert len(chunks) > len(docs)
+    joined = " ".join(d.page_content for d in docs)
+    assert "星河活期" in joined
+    assert "随心贷" in joined
+
+
+def test_hashed_embeddings_are_normalized_and_sensitive():
+    emb = HashedNgramEmbeddings(dim=64)
+    v1 = emb.embed_query("活期利率")
+    v2 = emb.embed_query("活期利率")
+    v3 = emb.embed_query("信用卡积分")
+    assert v1 == v2
+    assert len(v1) == 64
+    assert abs(sum(x * x for x in v1) - 1) < 1e-6
+    assert v1 != v3
+
+
+def test_extractive_generator_cites_sources():
+    docs = [
+        Document(page_content="星河活期年利率：0.20%。随时存取。"),
+        Document(page_content="信用卡账单日是每月 8 日。"),
+    ]
+    answer = ExtractiveGenerator().generate("活期年利率是多少", docs)
+    assert "0.20%" in answer
+    assert "资料" in answer
+
+
+def test_format_context_includes_index():
+    docs = [Document(page_content="hello", metadata={"source": "a.md"})]
+    text = format_context(docs)
+    assert "[资料1 | a.md]" in text
+
+
+def test_end_to_end_ask(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma"))
+    monkeypatch.setenv("RAG_DATA_DIR", str(KB))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "hashed")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+
+    from rag import config
+    from rag.ingest import build_index
+
+    config.CHROMA_DIR = tmp_path / "chroma"
+    config.DATA_DIR = KB
+    config.EMBEDDING_BACKEND = "hashed"
+    config.OPENAI_API_KEY = ""
+    config.GROQ_API_KEY = ""
+
+    stats = build_index(reset=True, data_dir=KB)
+    assert stats["chunks"] > 0
+
+    result = ask("星河活期的年利率是多少？", k=4)
+    assert result.sources
+    assert result.generator == "extractive"
+    # hashed embedding + 专有名词应能找回储蓄文档
+    blob = " ".join(d.page_content for d in result.sources)
+    assert "活期" in blob or "0.20%" in result.answer
