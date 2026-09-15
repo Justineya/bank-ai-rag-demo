@@ -12,7 +12,7 @@ from langchain_core.documents import Document
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
-from rag.generate import preview_prompt, build_generator
+from rag.generate import preview_prompt, build_generator, postprocess_answer
 from rag.ingest import (
     build_index,
     ensure_index,
@@ -22,6 +22,7 @@ from rag.ingest import (
     save_uploaded_file,
     split_documents,
 )
+from rag.rerank import rerank_hits
 from rag.retrieve import retrieve_ranked
 from rag.textutil import tokenize
 
@@ -31,8 +32,9 @@ STEPS = [
     ("切块", "Split：为什么要切开"),
     ("索引", "Embed + Store：写进仓库"),
     ("提问", "把问题变成检索词"),
-    ("检索", "Retrieve：谁排第一"),
-    ("生成", "Generate：答案从哪来"),
+    ("检索", "Retrieve：先多召回"),
+    ("重排", "Rerank：再精排留下几条"),
+    ("生成", "Generate + 后处理"),
 ]
 
 SAMPLE_QUESTIONS = [
@@ -77,6 +79,8 @@ def main() -> None:
         _step_question()
     elif step == 5:
         _step_retrieve()
+    elif step == 6:
+        _step_rerank()
     else:
         _step_generate()
 
@@ -90,6 +94,7 @@ def _init_state() -> None:
         "chunk_size": config.CHUNK_SIZE,
         "chunk_overlap": config.CHUNK_OVERLAP,
         "top_k": config.TOP_K,
+        "fetch_k": config.FETCH_K,
         "retriever_mode": config.RETRIEVER,
         "index_stats": None,
         "extra_note": "",
@@ -162,11 +167,12 @@ def _step_intro() -> None:
     )
     st.markdown(
         """
-#### 先记住三件事（后面每一步都在落实）
+#### 先记住四件事（后面每一步都在落实）
 
 1. **知识库**是 Markdown、PDF、Word 等文件，模型事先没读过。  
 2. **索引**把文件切段、向量化，写入 Chroma。你不用再贴一遍产品——打开页面会自动入库。  
-3. **检索**只取出几小段给生成器用。生成器看不见全文。
+3. **检索**先多捞一些候选（召回）。**重排**再按「和问题对得上吗」精排，只留几段给生成器。  
+4. **生成**靠 Prompt 约束模型；**后处理**是模型写完之后的规则（补引用、空检索拒答），不是再改一遍 Prompt。
 """
     )
     c1, c2, c3 = st.columns(3)
@@ -182,14 +188,16 @@ def _step_intro() -> None:
 | 文档 | md / 文本 PDF / docx | 再加扫描件 OCR、权限、版本 |
 | 向量化 | 默认字符哈希，秒级 | 句向量或商业 Embedding，分钟～小时 |
 | 存储 | **Chroma** 本地目录（就是向量库） | pgvector、Milvus、Pinecone 等 |
+| 重排 | 词重叠精排（教学替身） | Cross-Encoder / bge-reranker |
 | 生成 | Agnes 等 LLM + 检索上下文 | 同样，但有评测、缓存、审计 |
+| 后处理 | 补引用、空检索拒答 | 忠实度检查、敏感信息过滤 |
 
 默认哈希快，是为了让你先看懂步骤。真句向量会慢，因为每段都要过神经网络。
 """
     )
     st.markdown("#### 整条流水线")
     st.code(
-        "文档 → 切块 → 写入仓库(索引) → 问题分词 → 检索 top-k → 填进 Prompt → 生成答案",
+        "文档 → 切块 → 写入仓库(索引) → 问题分词 → 多召回 fetch-k → 重排留 top-k → Prompt 生成 → 后处理",
         language="text",
     )
     if st.button("从知识库开始参观", type="primary"):
@@ -391,24 +399,33 @@ def _use_sample_question(sample: str) -> None:
 
 def _step_retrieve() -> None:
     _teach(
-        "检索器给每个 chunk 打分，只把前 k 名交给生成器。默认 BM25 看「词是否出现」；vector 用教学哈希向量看「向量近不近」。排不到前面的段落，生成器看不见。",
-        "结果为空通常有三种原因：仓库是空的（没索引）；问句用词和手册不一致；你开了 vector，而教学哈希向量对中文很弱。",
-        "先保持 BM25。点开第一名看黄字命中。只有想对比时才切 vector。改 top-k 看会不会多捞到后排资料。",
+        "这一步是召回：用 BM25 或向量先多捞若干条，不急着只留最终的 top-k。生产里常召回 20～50 条，再交给重排。手册很小、问题很短时，也可以跳过重排、直接取 top-k。",
+        "检索器擅长「别漏」：相关段落如果排在第 8 名，生成器永远看不见。先放大候选池，下一步重排再扔掉噪音。",
+        "把「多召回几条」调大，对照表格。默认仍用 BM25。点开高亮看命中词。下一步才是精排。",
     )
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     with c1:
-        st.session_state.top_k = st.slider("取回几条 top-k", 1, 8, st.session_state.top_k)
+        st.session_state.fetch_k = st.slider("多召回几条 fetch-k", 4, 24, int(st.session_state.fetch_k))
     with c2:
+        st.session_state.top_k = st.slider("重排后要留几条 top-k", 1, 8, st.session_state.top_k)
+    with c3:
         st.session_state.retriever_mode = st.radio(
             "检索器",
             ["bm25", "vector"],
             index=0 if st.session_state.retriever_mode == "bm25" else 1,
             horizontal=True,
         )
+    if st.session_state.fetch_k < st.session_state.top_k:
+        st.session_state.fetch_k = st.session_state.top_k
     question = st.session_state.question
     st.markdown(f"当前问题：`{question}`")
     try:
-        ranked = retrieve_ranked(question, k=st.session_state.top_k, retriever=st.session_state.retriever_mode)
+        ranked = retrieve_ranked(
+            question,
+            k=st.session_state.top_k,
+            retriever=st.session_state.retriever_mode,
+            fetch_k=st.session_state.fetch_k,
+        )
     except Exception as exc:
         st.error(f"检索失败：{exc}")
         st.session_state.index_ready = False
@@ -436,13 +453,15 @@ def _step_retrieve() -> None:
                 "手册原文写的是「提前还款」「住房按揭 / 房贷」「违约金」。词对不上就会空。"
                 "「明天股价会涨吗」这种手册里没有的问题，空结果才是正确行为。"
             )
+        st.session_state["ranked"] = []
+        st.session_state["reranked"] = []
         return
     rows = []
     for i, item in enumerate(ranked, start=1):
         src = Path(str(item["doc"].metadata.get("source", ""))).name
         rows.append(
             {
-                "名次": i,
+                "召回名次": i,
                 "分数": item["score"],
                 "含义": "向量距离(越小越近)" if item.get("score_kind") == "vector_distance" else "BM25(越大越好)",
                 "命中词": "、".join(item["matched"]) or "—",
@@ -452,54 +471,149 @@ def _step_retrieve() -> None:
         )
     st.dataframe(rows, hide_index=True, use_container_width=True)
     st.session_state["ranked"] = ranked
-    for i, item in enumerate(ranked, start=1):
+    st.caption("上面整张表都会进入下一步重排；生成器仍然只能看见重排后留下的几条。")
+    for i, item in enumerate(ranked[:8], start=1):
         src = Path(str(item["doc"].metadata.get("source", ""))).name
-        with st.expander(f"第 {i} 名 · 分数 {item['score']} · {src}", expanded=(i == 1)):
+        with st.expander(f"召回第 {i} 名 · 分数 {item['score']} · {src}", expanded=(i == 1)):
             st.markdown(_highlight_html(item["doc"].page_content, item["matched"]), unsafe_allow_html=True)
             st.caption("高亮 = 和问题分词重叠的词。没有高亮却被召回，多半是向量近邻，语义像但用词不同。")
 
 
+def _step_rerank() -> None:
+    _teach(
+        "重排用「问题和这段话对得上的程度」再打一遍分，只留下 top-k 给生成器。教室里用词重叠 + 标题加权；生产里常换成 Cross-Encoder / bge-reranker。",
+        "小知识库、BM25 已经很准时，这一步收益有限，可以不加。候选一多、向量召回噪音大时，几乎都会加。官方 rag-from-scratch 三步里没有它，所以它是可选增强，不是 RAG 定义的一部分。",
+        "对照左右两张表：左边是召回顺序，右边是精排后留下的。名次若对调，说明第一轮检索把更相关的段落排到了后面。",
+    )
+    question = st.session_state.question
+    ranked = st.session_state.get("ranked")
+    if ranked is None:
+        try:
+            ranked = retrieve_ranked(
+                question,
+                k=st.session_state.top_k,
+                retriever=st.session_state.retriever_mode,
+                fetch_k=st.session_state.fetch_k,
+            )
+            st.session_state["ranked"] = ranked
+        except Exception as exc:
+            st.error(f"请先完成索引和检索：{exc}")
+            return
+    if not ranked:
+        st.warning("召回为空，没有可重排的段落。回到检索步换一个问题。")
+        st.session_state["reranked"] = []
+        return
+    kept = rerank_hits(question, ranked, keep=st.session_state.top_k)
+    st.session_state["reranked"] = kept
+    left, right = st.columns(2)
+    with left:
+        st.markdown("#### 召回顺序（未精排）")
+        recall_rows = []
+        for i, item in enumerate(ranked, start=1):
+            src = Path(str(item["doc"].metadata.get("source", ""))).name
+            recall_rows.append(
+                {
+                    "召回": i,
+                    "检索分": item.get("score"),
+                    "来源": src,
+                    "开头": item["doc"].page_content.strip().splitlines()[0][:28],
+                }
+            )
+        st.dataframe(recall_rows, hide_index=True, use_container_width=True)
+    with right:
+        st.markdown("#### 重排后留下的（给生成器用）")
+        keep_rows = []
+        for item in kept:
+            src = Path(str(item["doc"].metadata.get("source", ""))).name
+            keep_rows.append(
+                {
+                    "精排": item.get("rerank_rank"),
+                    "原召回": item.get("recall_rank"),
+                    "重排分": item.get("rerank_score"),
+                    "来源": src,
+                    "开头": item["doc"].page_content.strip().splitlines()[0][:28],
+                }
+            )
+        st.dataframe(keep_rows, hide_index=True, use_container_width=True)
+    moved = [item for item in kept if item.get("recall_rank") != item.get("rerank_rank")]
+    if moved:
+        st.info("有段落的名次变了：检索负责广撒网，重排负责把更贴问题的片段抬到前面。")
+    else:
+        st.caption("这一问上，精排没有打乱名次。小语料 + BM25 时很常见，不代表生产里也不需要重排。")
+    for item in kept[:3]:
+        src = Path(str(item["doc"].metadata.get("source", ""))).name
+        with st.expander(
+            f"精排第 {item.get('rerank_rank')} 名（原召回第 {item.get('recall_rank')}）· {src}",
+            expanded=item.get("rerank_rank") == 1,
+        ):
+            st.markdown(_highlight_html(item["doc"].page_content, item.get("matched") or []), unsafe_allow_html=True)
+
+
 def _step_generate() -> None:
     _teach(
-        "生成器不能偷看手册全文，只能看见上一步挑出的几段。接上 Agnes Key 后，这一步才会调用大模型；没 Key 时只展示检索原文。",
-        "答案被 Prompt 锁死。检索错了，生成再强也会错。空检索就不该编利率。",
-        "展开 Prompt，对照答案和第一名原文是否一致。",
+        "生成器只能看见重排后留下的几段。Prompt 在调用模型之前约束它；后处理在模型写完之后检查：空检索拒答、去掉代码围栏、补 (资料N)、列出引用文件。",
+        "改 Prompt 只能影响「模型怎么写」。引用列表、拒答、格式清洗属于规则，放在生成之后更稳，也不消耗一次额外的模型调用。",
+        "先看 Prompt，再看「模型原文」和「后处理之后」。对照第一名原文。没有 Key 时只有抽取式摘要，后处理仍会补引用文件。",
     )
-    ranked = st.session_state.get("ranked")
+    ranked = st.session_state.get("reranked") or st.session_state.get("ranked")
     question = st.session_state.question
     if not ranked:
         try:
-            ranked = retrieve_ranked(question, k=st.session_state.top_k, retriever=st.session_state.retriever_mode)
-            st.session_state["ranked"] = ranked
+            recalled = retrieve_ranked(
+                question,
+                k=st.session_state.top_k,
+                retriever=st.session_state.retriever_mode,
+                fetch_k=st.session_state.fetch_k,
+            )
+            ranked = rerank_hits(question, recalled, keep=st.session_state.top_k)
+            st.session_state["ranked"] = recalled
+            st.session_state["reranked"] = ranked
         except Exception as exc:
             st.error(f"请先完成索引和检索：{exc}")
             return
     docs = [item["doc"] for item in ranked]
     if not docs:
-        st.warning("检索为空，生成器没有上下文可用。回到上一步换个问题。")
+        st.warning("检索为空，生成器没有上下文可用。回到检索步换个问题。")
+        raw = "知识库里没有检索到相关段落，请先运行索引或换一个问法。"
+        final, notes = postprocess_answer(raw, question, docs)
+        st.write(final)
+        st.caption("后处理动作：" + ("、".join(notes) if notes else "无"))
         return
     gen, name = build_generator()
     try:
-        answer = gen.generate(question, docs)
+        raw = gen.generate(question, docs)
     except Exception as exc:
         st.error(f"大模型调用失败（检索结果仍在右侧）。请检查 Key、模型名和 Base URL。详情：{exc}")
         from rag.generate import ExtractiveGenerator
 
-        answer = ExtractiveGenerator().generate(question, docs)
+        raw = ExtractiveGenerator().generate(question, docs)
         name = f"{name}（调用失败，回退抽取）"
+    final, notes = postprocess_answer(raw, question, docs)
     left, right = st.columns(2)
     with left:
-        st.markdown("#### 答案")
-        st.write(answer)
-        st.caption(f"当前生成器：`{name}`")
+        st.markdown("#### 后处理之后的答案（用户看到的）")
+        st.write(final)
+        st.caption(f"当前生成器：`{name}` · 后处理：" + ("、".join(notes) if notes else "无"))
+        with st.expander("模型刚写完、还没后处理的原文"):
+            st.write(raw)
     with right:
-        st.markdown("#### 它只看见这些资料")
+        st.markdown("#### 它只看见这些资料（重排后）")
         for i, doc in enumerate(docs, start=1):
             src = Path(str(doc.metadata.get("source", ""))).name
             st.markdown(f"**资料{i} · {src}**")
             st.write(doc.page_content[:280] + ("…" if len(doc.page_content) > 280 else ""))
-    with st.expander("打开将要发给模型的 Prompt（参与感就在这里：答案被这段话锁死）", expanded=True):
+    with st.expander("① 发给模型的 Prompt（生成前，靠这段话锁死答案）", expanded=True):
         st.code(preview_prompt(question, docs), language="markdown")
+    with st.expander("② 后处理做了什么（生成后，不是再改 Prompt）", expanded=True):
+        st.markdown(
+            """
+- **空检索拒答**：没有资料就不让模型编利率。
+- **去掉代码围栏**：有的模型喜欢包一层 markdown。
+- **补引用**：正文里如果没有 `(资料N)`，补上。
+- **列出文件名**：方便对照来源。生产里还可以做忠实度检查、敏感信息过滤。
+"""
+        )
+        st.caption("本轮实际执行：" + ("、".join(notes) if notes else "无"))
     if name.startswith("agnes:"):
         st.success(f"本步已调用 Agnes 大模型（`{name}`）。检索仍在本地，模型只根据上面的资料作答。")
     elif name == "extractive":

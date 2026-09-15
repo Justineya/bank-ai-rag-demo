@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from langchain_core.documents import Document
 
 from rag import config
-from rag.generate import Generator, build_generator
-from rag.retrieve import retrieve
+from rag.generate import Generator, build_generator, postprocess_answer
+from rag.rerank import rerank_hits
+from rag.retrieve import retrieve_ranked
 
 
 @dataclass
@@ -22,9 +23,13 @@ class RAGAnswer:
 
 def ask(question: str, k: int | None = None, generator: Generator | None = None) -> RAGAnswer:
     top_k = k or config.TOP_K
-    docs = retrieve(question, k=top_k)
+    fetch_k = max(top_k * 4, config.FETCH_K, top_k)
+    recalled = retrieve_ranked(question, k=top_k, fetch_k=fetch_k)
+    kept = rerank_hits(question, recalled, keep=top_k)
+    docs = [item["doc"] for item in kept]
     gen, name = (generator, "custom") if generator else build_generator()
-    answer = gen.generate(question, docs)
+    raw = gen.generate(question, docs)
+    answer, _notes = postprocess_answer(raw, question, docs)
     return RAGAnswer(
         question=question,
         answer=answer,

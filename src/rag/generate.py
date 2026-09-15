@@ -56,6 +56,30 @@ class ChatModelGenerator:
         return content if isinstance(content, str) else str(content)
 
 
+def postprocess_answer(answer: str, question: str, docs: list[Document]) -> tuple[str, list[str]]:
+    """生成之后的规则处理：不是改 Prompt，而是检查、补引用、空检索拒答。"""
+    notes: list[str] = []
+    text = (answer or "").strip()
+    if not docs:
+        notes.append("empty_retrieve")
+        return "资料中没有检索到可用段落，因此不能编造答案。", notes
+    if "```" in text:
+        text = text.replace("```markdown", "").replace("```", "").strip()
+        notes.append("strip_fence")
+    has_cite = bool(re.search(r"资料\s*\d+", text))
+    if not has_cite:
+        text = text + " (资料1)"
+        notes.append("append_cite")
+    names = []
+    for i, doc in enumerate(docs, start=1):
+        src = str(doc.metadata.get("source", "unknown"))
+        names.append(f"{i}.{src.rsplit('/', 1)[-1]}")
+    text = text + "\n\n【后处理·引用文件】" + "；".join(names)
+    notes.append("attach_sources")
+    _ = question
+    return text, notes
+
+
 def preview_prompt(question: str, docs: list[Document]) -> str:
     context = format_context(docs)
     return (

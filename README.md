@@ -22,10 +22,16 @@
 Chroma 向量库
     │  Store
     ▼
-问题 → BM25 / 向量 top-k     Retrieve
+问题 → BM25 / 向量 多召回 fetch-k    Retrieve
     │
     ▼
-Prompt + LLM / 抽取式回答    Generate
+词重叠精排，只留 top-k               Rerank（可选）
+    │
+    ▼
+Prompt + LLM / 抽取式回答            Generate
+    │
+    ▼
+补引用 / 空检索拒答                  Post-process
 ```
 
 | 层 | 本 Demo 的选择 | 以后可以换成 |
@@ -33,8 +39,10 @@ Prompt + LLM / 抽取式回答    Generate
 | 框架 | LangChain LCEL 风格的模块拆分 | LlamaIndex、自写 cosine |
 | 切块 | `RecursiveCharacterTextSplitter` | 按标题 / 按 token |
 | 检索 | 默认 BM25（jieba 分词） | Chroma 向量检索 `RAG_RETRIEVER=vector` |
+| 重排 | 词重叠 + 标题加权 | Cross-Encoder、bge-reranker |
 | 向量库 | Chroma（本地目录） | FAISS、pgvector |
-| 生成 | 无 Key 时抽取式；有 Key 用 OpenAI / Groq | Ollama 本地模型 |
+| 生成 | 无 Key 时抽取式；有 Key 用 Agnes / OpenAI / Groq | Ollama 本地模型 |
+| 后处理 | 补引用、拒答、去代码围栏 | 忠实度打分、敏感词过滤 |
 
 默认走哈希 Embedding + 抽取式生成，所以 **不配 API Key 也能完成闭环**。配上 `OPENAI_API_KEY` 或 `GROQ_API_KEY` 后，生成会切换成对话模型。
 
@@ -49,8 +57,9 @@ src/rag/          流水线源码，一文件一层
   config.py       路径与模型
   embeddings.py   文本 → 向量
   ingest.py       建索引
-  retrieve.py     检索
-  generate.py     生成
+  retrieve.py     检索（召回）
+  rerank.py       重排
+  generate.py     生成 + 后处理
   pipeline.py     ask() 入口
 cli.py            命令行
 app.py            Streamlit 讲解式教室
@@ -78,10 +87,11 @@ streamlit run app.py
 2. 拖动切块大小，看 chunk 如何变化  
 3. 可选写一条自己的规定，再点「写入索引」  
 4. 点现成问题，看分词芯片  
-5. 在检索页看分数、点开高亮命中词  
-6. 在生成页展开 Prompt，对照答案和原文
+5. 在检索页看召回表（fetch-k 可以大于 top-k）  
+6. 在重排页对照「召回顺序 vs 精排留下的」  
+7. 在生成页展开 Prompt，再看后处理补了哪些引用
 
-第一次提问前需要在教室第 4 步「索引」写入向量库。
+第一次打开页面会自动建索引。Streamlit Cloud 请把 Branch 设为功能分支，Main file 填 `app.py`。
 
 命令行仍然可用：
 
@@ -96,10 +106,11 @@ python cli.py "活期利率是多少？"
 2. 读 `src/rag/ingest.py`：切块大小 `CHUNK_SIZE=400`、重叠 `80` 会怎样影响检索。
 3. 读 `src/rag/embeddings.py` 与 `src/rag/textutil.py`：先理解 BM25，再对比哈希向量。
 4. 运行 `python cli.py --rebuild` 后看 `chroma_db/` 是否生成。
-5. 读 `src/rag/generate.py`：对比抽取式回答和 Chat Prompt。
-6. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
-7. 索引页勾选「句向量」：Cloud 会按 `requirements.txt` 安装 `sentence-transformers`，第一次重建索引会下载模型，可能要等几分钟。
-8. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
+5. 读 `src/rag/generate.py`：对比抽取式回答、Chat Prompt、以及 `postprocess_answer`。
+6. 读 `src/rag/rerank.py`：召回多条后再精排。小语料上名次可能不变，这是正常的。
+7. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
+8. 索引页勾选「句向量」：Cloud 会按 `requirements.txt` 安装 `sentence-transformers`，第一次重建索引会下载模型，可能要等几分钟。
+9. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
 
 ## 测试
 

@@ -164,3 +164,45 @@ def test_build_generator_uses_agnes_when_key_present(monkeypatch):
     gen, name = build_generator()
     assert name.startswith("agnes:")
     assert isinstance(gen, ChatModelGenerator)
+
+
+def test_rerank_promotes_overlap_over_high_recall_score():
+    from rag.rerank import rerank_hits
+
+    noisy = {
+        "score": 99.0,
+        "doc": Document(page_content="## 积分商城\n可用积分兑换航司里程。", metadata={"source": "points.md"}),
+        "matched": [],
+    }
+    relevant = {
+        "score": 0.1,
+        "doc": Document(
+            page_content="## 星河活期\n星河活期年利率：0.20%。随时存取，不收管理费。",
+            metadata={"source": "deposit.md"},
+        ),
+        "matched": ["活期"],
+    }
+    kept = rerank_hits("活期年利率是多少？", [noisy, relevant], keep=1)
+    assert kept
+    assert "0.20%" in kept[0]["doc"].page_content
+    assert kept[0]["recall_rank"] == 2
+    assert kept[0]["rerank_rank"] == 1
+
+
+def test_postprocess_is_not_a_prompt_rewrite():
+    from rag.generate import postprocess_answer
+
+    docs = [Document(page_content="星河活期年利率 0.20%。", metadata={"source": "data/kb/01-deposit.md"})]
+    text, notes = postprocess_answer("```markdown\n年利率是 0.20%\n```", "活期利率是多少", docs)
+    assert "年利率是 0.20%" in text
+    assert "```" not in text
+    assert "(资料1)" in text
+    assert "01-deposit.md" in text
+    assert "strip_fence" in notes
+    assert "append_cite" in notes
+    assert "attach_sources" in notes
+
+    refused, empty_notes = postprocess_answer("我编一个利率 9%。", "明天股价会涨吗", [])
+    assert "不能编造" in refused
+    assert "empty_retrieve" in empty_notes
+    assert "9%" not in refused

@@ -19,6 +19,7 @@ CHROMA_DIR = Path(os.getenv("RAG_CHROMA_DIR", ROOT / "chroma_db"))
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "400"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
 TOP_K = int(os.getenv("RAG_TOP_K", "4"))
+FETCH_K = int(os.getenv("RAG_FETCH_K", str(max(TOP_K * 4, 8))))
 # bm25 | vector
 RETRIEVER = os.getenv("RAG_RETRIEVER", "bm25").lower()
 

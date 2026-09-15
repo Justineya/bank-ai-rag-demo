@@ -22,21 +22,25 @@ def _all_docs() -> list[Document]:
     ]
 
 
-def retrieve_ranked(question: str, k: int | None = None, retriever: str | None = None) -> list[dict]:
+def retrieve_ranked(
+    question: str,
+    k: int | None = None,
+    retriever: str | None = None,
+    fetch_k: int | None = None,
+) -> list[dict]:
     top_k = k or config.TOP_K
+    recall_k = fetch_k or max(top_k, config.FETCH_K)
     docs = _all_docs()
     if not docs:
         return []
+    recall_k = min(recall_k, len(docs))
     mode = (retriever or config.RETRIEVER).lower()
     if mode == "vector":
         store = get_vectorstore(reset=False)
-        fetch_k = min(max(top_k, 1), len(docs))
-        # 教学哈希向量的「分数」是距离，不是 BM25。只要仓库非空就一定返回邻居，
-        # 不再用词重叠把结果滤成空列表。
         try:
-            pairs = store.similarity_search_with_score(question, k=fetch_k)
+            pairs = store.similarity_search_with_score(question, k=recall_k)
         except Exception:
-            pairs = [(doc, 0.0) for doc in store.similarity_search(question, k=fetch_k)]
+            pairs = [(doc, 0.0) for doc in store.similarity_search(question, k=recall_k)]
         ranked = []
         for doc, dist in pairs:
             terms = set(tokenize(question)) & set(tokenize(doc.page_content))
@@ -49,12 +53,13 @@ def retrieve_ranked(question: str, k: int | None = None, retriever: str | None =
                     "score_kind": "vector_distance",
                 }
             )
-        return ranked[:top_k]
-    return BM25Index(docs).ranked_search(question, top_k)
+        return ranked
+    return BM25Index(docs).ranked_search(question, recall_k)
 
 
 def retrieve(question: str, k: int | None = None) -> list[Document]:
-    return [item["doc"] for item in retrieve_ranked(question, k=k)]
+    top_k = k or config.TOP_K
+    return [item["doc"] for item in retrieve_ranked(question, k=top_k, fetch_k=top_k)]
 
 
 def format_context(docs: list[Document]) -> str:
