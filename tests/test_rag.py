@@ -62,6 +62,7 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_BACKEND", "hashed")
     monkeypatch.setenv("OPENAI_API_KEY", "")
     monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("AGNES_API_KEY", "")
 
     from rag import config
     from rag.ingest import build_index
@@ -72,6 +73,7 @@ def test_end_to_end_ask(tmp_path, monkeypatch):
     config.RETRIEVER = "bm25"
     config.OPENAI_API_KEY = ""
     config.GROQ_API_KEY = ""
+    config.AGNES_API_KEY = ""
 
     stats = build_index(reset=True, data_dir=KB)
     assert stats["chunks"] > 0
@@ -114,3 +116,16 @@ def test_build_index_accepts_extra_docs(tmp_path, monkeypatch):
     ranked = retrieve_ranked("大厅超时怎么办？", k=3, retriever="bm25")
     assert ranked
     assert "超时" in ranked[0]["doc"].page_content
+
+
+def test_build_generator_uses_agnes_when_key_present(monkeypatch):
+    monkeypatch.setenv("AGNES_API_KEY", "sk-test-agnes")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    from rag import config
+    from rag.generate import ChatModelGenerator, build_generator
+
+    config.reload()
+    gen, name = build_generator()
+    assert name.startswith("agnes:")
+    assert isinstance(gen, ChatModelGenerator)

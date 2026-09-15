@@ -124,7 +124,16 @@ python -m pytest -q
 1. 把 PR 合并进 `main`，或在 Cloud 里选分支 `cursor/rag-from-scratch-demo-f62d`
 2. 打开 https://share.streamlit.io → New app → 选 `Justineya/bank-ai-rag-demo`
 3. Main file 填 `app.py`
-4. 可选：在 Secrets 里加 `OPENAI_API_KEY` / `GROQ_API_KEY`（没有也能用抽取式回答）
+4. 要用 Agnes 大模型：App → **Settings → Secrets** 填入（不要提交到 Git）
+
+```toml
+AGNES_API_KEY = "你的密钥"
+AGNES_MODEL = "agnes-2.5-flash"
+AGNES_BASE_URL = "https://apihub.agnes-ai.com/v1"
+```
+
+然后 Reboot。生成那一步会显示 `agnes:agnes-2.5-flash`。检索仍在本地，Key 只用于最后根据资料写答案。
+
 
 ### Docker（Render / 自己的机器）
 

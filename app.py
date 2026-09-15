@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 import sys
 from pathlib import Path
@@ -38,14 +39,19 @@ SAMPLE_QUESTIONS = [
 def main() -> None:
     st.set_page_config(page_title="星河银行 RAG 教室", page_icon="🏦", layout="wide")
     _inject_css()
+    _load_secrets()
     _init_state()
     _ensure_index_ready()
 
     n_chunks = (st.session_state.index_stats or {}).get("chunks")
+    llm_name = "Agnes" if config.AGNES_API_KEY else ("OpenAI" if config.OPENAI_API_KEY else ("Groq" if config.GROQ_API_KEY else "未接入（抽取原文）"))
     st.title("星河银行 RAG 教室")
     st.caption("建议按「下一步」慢慢走。检索仓库会在第一次打开时自动建好，你不用先添加资料。")
     if n_chunks:
-        st.success(f"当前手册已在检索仓库里：{n_chunks} 个 chunk。索引 = 把切好的段落存起来供搜索，不是让你再贴一遍文档。")
+        st.success(
+            f"检索仓库：{n_chunks} 个 chunk。生成器：{llm_name}。"
+            "索引只是把手册存成可搜索片段；大模型只在最后一步根据检索资料写答案。"
+        )
     _pipeline_nav()
     st.progress((st.session_state.step + 1) / len(STEPS), text=f"第 {st.session_state.step + 1} / {len(STEPS)} 步 · {STEPS[st.session_state.step][1]}")
 
@@ -82,6 +88,30 @@ def _init_state() -> None:
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
+
+
+def _load_secrets() -> None:
+    """Streamlit Cloud / secrets.toml 里的 Key 写进环境，生成步才能调用 Agnes。"""
+
+    def read(name: str) -> str:
+        try:
+            val = st.secrets[name]
+        except Exception:
+            return ""
+        return str(val).strip()
+
+    for src, dest in (
+        ("AGNES_API_KEY", "AGNES_API_KEY"),
+        ("AGNES_KEY", "AGNES_API_KEY"),
+        ("AGNES_MODEL", "AGNES_MODEL"),
+        ("AGNES_BASE_URL", "AGNES_BASE_URL"),
+        ("OPENAI_API_KEY", "OPENAI_API_KEY"),
+        ("GROQ_API_KEY", "GROQ_API_KEY"),
+    ):
+        val = read(src)
+        if val:
+            os.environ[dest] = val
+    config.reload()
 
 
 def _ensure_index_ready() -> None:
@@ -331,7 +361,7 @@ def _step_retrieve() -> None:
 
 def _step_generate() -> None:
     _teach(
-        "生成器不能偷看手册全文，只能看见上一步挑出的几段。没有 API Key 时，我们把第一名原文当作答案；有 Key 时同一份 Prompt 交给 LLM。",
+        "生成器不能偷看手册全文，只能看见上一步挑出的几段。接上 Agnes Key 后，这一步才会调用大模型；没 Key 时只展示检索原文。",
         "答案被 Prompt 锁死。检索错了，生成再强也会错。空检索就不该编利率。",
         "展开 Prompt，对照答案和第一名原文是否一致。",
     )
@@ -349,7 +379,14 @@ def _step_generate() -> None:
         st.warning("检索为空，生成器没有上下文可用。回到上一步换个问题。")
         return
     gen, name = build_generator()
-    answer = gen.generate(question, docs)
+    try:
+        answer = gen.generate(question, docs)
+    except Exception as exc:
+        st.error(f"大模型调用失败（检索结果仍在右侧）。请检查 Key、模型名和 Base URL。详情：{exc}")
+        from rag.generate import ExtractiveGenerator
+
+        answer = ExtractiveGenerator().generate(question, docs)
+        name = f"{name}（调用失败，回退抽取）"
     left, right = st.columns(2)
     with left:
         st.markdown("#### 答案")
@@ -363,8 +400,14 @@ def _step_generate() -> None:
             st.write(doc.page_content[:280] + ("…" if len(doc.page_content) > 280 else ""))
     with st.expander("打开将要发给模型的 Prompt（参与感就在这里：答案被这段话锁死）", expanded=True):
         st.code(preview_prompt(question, docs), language="markdown")
-    if name == "extractive":
-        st.info("现在没有调用大模型。配上 OPENAI_API_KEY 或 GROQ_API_KEY 后重启，生成器会换成对话模型，但检索步骤完全不变。")
+    if name.startswith("agnes:"):
+        st.success(f"本步已调用 Agnes 大模型（`{name}`）。检索仍在本地，模型只根据上面的资料作答。")
+    elif name == "extractive":
+        st.warning(
+            "现在没有调用大模型，所以答案只是检索到的原文摘录。"
+            "在 Streamlit Cloud：App → Settings → Secrets 添加 `AGNES_API_KEY`，可选 `AGNES_MODEL = \"agnes-2.5-flash\"`，然后 Reboot。"
+            "本地可把同样内容放进 `.streamlit/secrets.toml` 或 `.env`。"
+        )
 
 
 def _pager() -> None:

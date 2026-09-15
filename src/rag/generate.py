@@ -52,7 +52,8 @@ class ChatModelGenerator:
             ),
         ]
         result = self.model.invoke(messages)
-        return result.content if hasattr(result, "content") else str(result)
+        content = result.content if hasattr(result, "content") else str(result)
+        return content if isinstance(content, str) else str(content)
 
 
 def preview_prompt(question: str, docs: list[Document]) -> str:
@@ -66,6 +67,16 @@ def preview_prompt(question: str, docs: list[Document]) -> str:
 
 
 def build_generator() -> tuple[Generator, str]:
+    if config.AGNES_API_KEY:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            api_key=config.AGNES_API_KEY,
+            base_url=config.AGNES_BASE_URL,
+            model=config.AGNES_MODEL,
+            temperature=0,
+        )
+        return ChatModelGenerator(llm), f"agnes:{config.AGNES_MODEL}"
     if config.OPENAI_API_KEY:
         from langchain_openai import ChatOpenAI
 

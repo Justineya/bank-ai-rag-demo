@@ -32,3 +32,19 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+AGNES_API_KEY = (os.getenv("AGNES_API_KEY") or os.getenv("AGNES_KEY") or "").strip()
+AGNES_BASE_URL = os.getenv("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1").strip()
+AGNES_MODEL = os.getenv("AGNES_MODEL", "agnes-2.5-flash").strip()
+
+
+def reload() -> None:
+    """Streamlit secrets 写入环境变量后重新读取。"""
+    global OPENAI_API_KEY, OPENAI_MODEL, GROQ_API_KEY, GROQ_MODEL
+    global AGNES_API_KEY, AGNES_BASE_URL, AGNES_MODEL
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+    OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    AGNES_API_KEY = (os.getenv("AGNES_API_KEY") or os.getenv("AGNES_KEY") or "").strip()
+    AGNES_BASE_URL = os.getenv("AGNES_BASE_URL", "https://apihub.agnes-ai.com/v1").strip()
+    AGNES_MODEL = os.getenv("AGNES_MODEL", "agnes-2.5-flash").strip()
