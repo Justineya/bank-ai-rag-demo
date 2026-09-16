@@ -22,7 +22,8 @@ from rag.loaders import SUPPORTED_SUFFIXES, load_path
 
 def load_documents(data_dir: Path | None = None) -> list[Document]:
     directory = Path(data_dir or config.DATA_DIR)
-    roots = [directory, Path(config.UPLOAD_DIR)]
+    upload_root = Path(os.getenv("RAG_UPLOAD_DIR", directory / "uploads"))
+    roots = [directory, upload_root]
     all_files: list[Path] = []
     seen: set[Path] = set()
     for root in roots:
@@ -146,7 +147,8 @@ ALLOWED_UPLOAD_SUFFIXES = set(SUPPORTED_SUFFIXES)
 
 
 def _upload_dir() -> Path:
-    folder = Path(config.UPLOAD_DIR)
+    env = os.getenv("RAG_UPLOAD_DIR")
+    folder = Path(env) if env else Path(config.DATA_DIR) / "uploads"
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -197,7 +199,40 @@ def extracted_chars(path: Path) -> int:
     return sum(len(doc.page_content.strip()) for doc in load_path(path))
 
 
-def preview_vectors(limit: int = 15, offset: int = 0) -> dict:
+def vector_inventory() -> dict:
+    """按文件汇总向量库，避免预览只截前 20 条时以为上传文件没进去。"""
+    store = get_vectorstore(reset=False)
+    raw = store.get(include=["documents", "metadatas"])
+    documents = raw.get("documents") or []
+    metadatas = raw.get("metadatas") or []
+    buckets: dict[str, dict] = {}
+    for text, meta in zip(documents, metadatas):
+        meta = meta or {}
+        name = Path(str(meta.get("source", ""))).name or "unknown"
+        row = buckets.setdefault(
+            name,
+            {"source": name, "file_type": str(meta.get("file_type") or ""), "chunks": 0, "chars": 0},
+        )
+        row["chunks"] += 1
+        row["chars"] += len(text or "")
+        if not row["file_type"]:
+            row["file_type"] = str(meta.get("file_type") or "")
+    files = sorted(buckets.values(), key=lambda r: r["source"])
+    upload_names = {p.name for p in list_uploads()}
+    for row in files:
+        row["uploaded"] = row["source"] in upload_names
+    missing = uploads_missing_from_index()
+    return {
+        "total_chunks": len(documents),
+        "total_files": len(files),
+        "backend": config.EMBEDDING_BACKEND,
+        "collection": config.COLLECTION_NAME,
+        "files": files,
+        "missing_uploads": missing,
+    }
+
+
+def preview_vectors(limit: int = 15, offset: int = 0, source: str | None = None) -> dict:
     store = get_vectorstore(reset=False)
     raw = store.get(include=["documents", "metadatas", "embeddings"])
     ids = raw.get("ids") or []
@@ -207,16 +242,23 @@ def preview_vectors(limit: int = 15, offset: int = 0) -> dict:
     if embeddings is None:
         embeddings = []
     dim = len(embeddings[0]) if len(embeddings) else 0
+    picked: list[int] = []
+    want = (source or "").strip()
+    for i, meta in enumerate(metadatas):
+        name = Path(str((meta or {}).get("source", ""))).name
+        if want and name != want:
+            continue
+        picked.append(i)
+    slice_ids = picked[offset : offset + limit]
     rows = []
-    end = min(offset + limit, len(ids))
-    for i in range(offset, end):
+    for i in slice_ids:
         meta = metadatas[i] if i < len(metadatas) and metadatas[i] else {}
         vec = [float(x) for x in embeddings[i]] if i < len(embeddings) else []
         text = documents[i] if i < len(documents) else ""
         norm = sum(x * x for x in vec) ** 0.5 if vec else 0.0
         rows.append(
             {
-                "id": ids[i],
+                "id": ids[i] if i < len(ids) else "",
                 "source": Path(str(meta.get("source", ""))).name,
                 "file_type": meta.get("file_type", ""),
                 "page": meta.get("page", ""),
@@ -228,4 +270,10 @@ def preview_vectors(limit: int = 15, offset: int = 0) -> dict:
                 "text": text,
             }
         )
-    return {"total": len(ids), "dim": dim, "backend": config.EMBEDDING_BACKEND, "rows": rows}
+    return {
+        "total": len(ids),
+        "filtered": len(picked),
+        "dim": dim,
+        "backend": config.EMBEDDING_BACKEND,
+        "rows": rows,
+    }

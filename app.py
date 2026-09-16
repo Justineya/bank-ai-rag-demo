@@ -23,6 +23,7 @@ from rag.ingest import (
     save_uploaded_file,
     split_documents,
     uploads_missing_from_index,
+    vector_inventory,
 )
 from rag.loaders import load_path
 from rag.rerank import rerank_hits
@@ -424,6 +425,13 @@ def _step_index() -> None:
     else:
         config.EMBEDDING_BACKEND = "hashed"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
+    last_backend = (st.session_state.index_stats or {}).get("embedding_backend")
+    if last_backend and last_backend != config.EMBEDDING_BACKEND:
+        st.warning(
+            f"预览正在看集合 `{config.COLLECTION_NAME}`，上次重建用的是 `{last_backend}`。"
+            "换句向量/哈希后必须点重建，否则上传文件还在另一套库里。"
+        )
+    _ensure_uploads_indexed()
     if st.button("按当前切块重建索引", type="primary"):
         try:
             _rebuild_index()
@@ -442,33 +450,80 @@ def _step_index() -> None:
         st.caption(f"落盘目录：`{stats['persist_directory']}`")
 
     st.markdown("#### 预览向量库")
-    st.caption("每条记录 = 一段原文 + 对应的浮点向量。下面只显示前 12 维，避免刷屏。")
+    st.caption("先看「按文件汇总」。下面的明细默认只翻页显示，所以上传文件如果排在后面，看起来会像没入库。")
     try:
-        preview = preview_vectors(limit=20, offset=0)
+        inventory = vector_inventory()
     except Exception as exc:
         st.warning(f"还读不出向量：{exc}")
+        inventory = None
         preview = None
-    if preview and preview["total"]:
-        st.write(f"共 {preview['total']} 条，向量维度 {preview['dim']}，后端 `{preview['backend']}`")
-        table = [
+    if inventory:
+        st.write(
+            f"集合 `{inventory['collection']}` · 后端 `{inventory['backend']}` · "
+            f"{inventory['total_files']} 个文件 · {inventory['total_chunks']} 条 chunk"
+        )
+        if inventory["missing_uploads"]:
+            st.error("这些已上传文件还不在当前向量库里：" + "、".join(inventory["missing_uploads"]))
+        summary = [
             {
-                "来源": row["source"],
-                "类型": row["file_type"],
-                "页": row["page"],
-                "字数": row["chars"],
-                "维度": row["dim"],
-                "模长": row["norm"],
-                "前12维": str(row["vector_head"]),
-                "原文开头": row["preview"],
+                "文件": row["source"],
+                "类型": row["file_type"] or "—",
+                "chunk 数": row["chunks"],
+                "总字数": row["chars"],
+                "来源": "本次上传" if row["uploaded"] else "内置手册",
             }
-            for row in preview["rows"]
+            for row in inventory["files"]
         ]
-        st.dataframe(table, hide_index=True, use_container_width=True)
-        for i, row in enumerate(preview["rows"][:8]):
-            with st.expander(f"完整原文 · {row['source']} · dim={row['dim']}", expanded=(i == 0)):
-                st.write(row["text"])
-                st.code(str(row["vector_head"]) + (" …" if row["dim"] > 12 else ""))
-    elif preview is not None:
+        st.dataframe(summary, hide_index=True, use_container_width=True)
+        names = ["（全部文件）"] + [row["source"] for row in inventory["files"]]
+        picked = st.selectbox("查看某个文件的向量明细", names)
+        if st.session_state.get("preview_source") != picked:
+            st.session_state.preview_offset = 0
+            st.session_state.preview_source = picked
+        source = None if picked == "（全部文件）" else picked
+        if "preview_offset" not in st.session_state:
+            st.session_state.preview_offset = 0
+        cols = st.columns((1, 1, 2))
+        with cols[0]:
+            if st.button("上一页") and st.session_state.preview_offset >= 20:
+                st.session_state.preview_offset -= 20
+                st.rerun()
+        with cols[1]:
+            if st.button("下一页"):
+                st.session_state.preview_offset += 20
+                st.rerun()
+        try:
+            preview = preview_vectors(limit=20, offset=st.session_state.preview_offset, source=source)
+        except Exception as exc:
+            st.warning(f"明细读不出：{exc}")
+            preview = None
+        if preview and preview["rows"]:
+            st.caption(
+                f"明细 {st.session_state.preview_offset + 1}–"
+                f"{st.session_state.preview_offset + len(preview['rows'])} / {preview['filtered']} 条"
+                "（向量只展示前 12 维）"
+            )
+            table = [
+                {
+                    "来源": row["source"],
+                    "类型": row["file_type"],
+                    "页": row["page"],
+                    "字数": row["chars"],
+                    "维度": row["dim"],
+                    "模长": row["norm"],
+                    "前12维": str(row["vector_head"]),
+                    "原文开头": row["preview"],
+                }
+                for row in preview["rows"]
+            ]
+            st.dataframe(table, hide_index=True, use_container_width=True)
+            for i, row in enumerate(preview["rows"][:8]):
+                with st.expander(f"完整原文 · {row['source']} · dim={row['dim']}", expanded=(i == 0)):
+                    st.write(row["text"])
+                    st.code(str(row["vector_head"]) + (" …" if row["dim"] > 12 else ""))
+        elif preview is not None:
+            st.info("没有符合筛选的明细。")
+    elif inventory is not None:
         st.info("向量库暂时是空的，请先重建索引。")
 
 

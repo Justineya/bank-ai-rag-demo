@@ -165,6 +165,12 @@ def test_upload_and_preview_vectors(tmp_path, monkeypatch):
     stats = build_index(reset=True, data_dir=kb)
     preview = preview_vectors(limit=20)
     assert preview["total"] == stats["chunks"]
+    from rag.ingest import vector_inventory
+
+    inv = vector_inventory()
+    names = {row["source"] for row in inv["files"]}
+    assert saved.name in names
+    assert inv["total_chunks"] == stats["chunks"]
     assert preview["dim"] > 0
     assert preview["rows"]
     assert preview["rows"][0]["vector_head"]
