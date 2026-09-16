@@ -24,6 +24,7 @@ from rag.ingest import (
     split_documents,
     uploads_missing_from_index,
 )
+from rag.loaders import load_path
 from rag.rerank import rerank_hits
 from rag.retrieve import retrieve_ranked
 from rag.textutil import tokenize
@@ -273,7 +274,7 @@ def _step_load() -> None:
     _teach(
         "知识库是磁盘上的文件：`data/kb` 里的 Markdown、PDF、Word，以及你现在上传的材料。Load 只负责读进来，变成文档对象。这里还没有搜索，也还没有向量。",
         "真实文件应该加在这一步，而不是索引步。索引只是把「已经在知识库里的东西」切块、向量化、写入 Chroma。放错位置会让人以为向量库是另一个文件夹。",
-        "先点左侧一篇制度确认能看原文。再上传自己的文件：保存后会自动写入检索仓库，不必再跑去索引步。扫描件 PDF 抽不出字，问了也会空。",
+        "先点左侧一篇制度确认能看原文。再拖入自己的 PDF / Word / 图片：选中文件就会保存并索引，不必再点一次。扫描件会尝试 OCR。",
     )
     _upload_panel()
     docs = load_documents()
@@ -298,48 +299,73 @@ def _step_load() -> None:
         st.text_area("原文", doc.page_content, height=360, label_visibility="collapsed")
 
 
+def _ingest_selected_uploads() -> None:
+    files = st.session_state.get("kb_file_uploader") or []
+    if not files:
+        return
+    done = st.session_state.setdefault("ingested_upload_sigs", [])
+    saved = []
+    blank = []
+    for item in files:
+        sig = f"{item.name}:{getattr(item, 'size', 0)}"
+        if sig in done:
+            continue
+        path = save_uploaded_file(item.name, item.getvalue())
+        saved.append(path)
+        done.append(sig)
+        if extracted_chars(path) == 0:
+            blank.append(path.name)
+    if not saved:
+        return
+    st.session_state.uploads_pending_index = True
+    try:
+        _rebuild_index()
+        st.session_state.upload_ok = "已识别并写入检索：" + "、".join(p.name for p in saved)
+        st.session_state.upload_error = ""
+    except Exception as exc:
+        st.session_state.upload_ok = ""
+        st.session_state.upload_error = f"文件已保存，但写入检索仓库失败：{exc}"
+    st.session_state.upload_blank = blank
+
+
 def _upload_panel() -> None:
     st.markdown("#### 把真实文件放进知识库")
-    st.caption("支持 .pdf / .docx / .md / .txt。保存后会自动索引；扫描版 PDF 若抽不出字，检索仍然是空的。")
-    uploaded = st.file_uploader(
-        "选择文件（可多选）",
-        type=["pdf", "docx", "md", "txt"],
+    st.caption("支持 PDF、Word（.docx）、Markdown、txt、手机拍照/截图。选中文件就会入库；扫描件会走 OCR，第一次可能要下载模型。")
+    st.file_uploader(
+        "拖入或选择文件（可多选）",
+        type=["pdf", "docx", "md", "txt", "png", "jpg", "jpeg", "webp"],
         accept_multiple_files=True,
         key="kb_file_uploader",
+        on_change=_ingest_selected_uploads,
     )
-    if uploaded and st.button("保存到知识库", type="primary"):
-        saved_paths = []
-        blank = []
-        for item in uploaded:
-            path = save_uploaded_file(item.name, item.getvalue())
-            saved_paths.append(path)
-            if extracted_chars(path) == 0:
-                blank.append(path.name)
-        st.session_state.uploads_pending_index = True
-        try:
-            _rebuild_index()
-        except Exception as exc:
-            st.error(f"文件已保存，但写入检索仓库失败：{exc}")
-        else:
-            st.success("已保存并写入检索仓库：" + "、".join(p.name for p in saved_paths))
-        if blank:
-            st.error(
-                "这些文件没有抽出任何文字（常见于扫描件 PDF）。当前不能检索其中内容，需要可复制文字的 PDF 或加 OCR："
-                + "、".join(blank)
-            )
-        st.rerun()
+    if st.session_state.get("upload_ok"):
+        st.success(st.session_state.upload_ok)
+    if st.session_state.get("upload_error"):
+        st.error(st.session_state.upload_error)
+    if st.session_state.get("upload_blank"):
+        st.error(
+            "这些文件仍然抽不出字："
+            + "、".join(st.session_state.upload_blank)
+            + "。请换可复制文字的 PDF/Word，或更清晰的照片。"
+        )
     existing = list_uploads()
     if existing:
-        st.markdown("**已上传（可删除）**")
+        st.markdown("**已上传**")
         for path in existing:
-            chars = extracted_chars(path)
+            docs = load_path(path)
+            text = "\n".join(d.page_content for d in docs).strip()
             left, right = st.columns((4, 1))
-            left.write(f"{path.name} · {path.stat().st_size} 字节 · 抽出 {chars} 字")
+            left.write(f"{path.name} · {path.stat().st_size} 字节 · 抽出 {len(text)} 字")
             if right.button("删除", key=f"del_upload_{path.name}"):
                 path.unlink()
                 st.session_state.uploads_pending_index = True
                 _rebuild_index()
                 st.rerun()
+            if text:
+                with st.expander(f"识别出的原文 · {path.name}", expanded=len(text) < 400):
+                    st.write(text[:2000] + ("…" if len(text) > 2000 else ""))
+            else:
+                st.caption(f"{path.name} 没有识别出文字，检索时等于不存在这份文件。")
     missing = uploads_missing_from_index()
     if missing:
         st.warning("这些上传文件还没进检索仓库：" + "、".join(missing) + "。正在补写。")

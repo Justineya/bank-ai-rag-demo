@@ -17,12 +17,25 @@ from rag import config
 from rag.embeddings import build_embeddings
 
 
-from rag.loaders import load_path
+from rag.loaders import SUPPORTED_SUFFIXES, load_path
 
 
 def load_documents(data_dir: Path | None = None) -> list[Document]:
     directory = Path(data_dir or config.DATA_DIR)
-    all_files = [p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() in {".md", ".txt", ".pdf", ".docx"}]
+    roots = [directory, Path(config.UPLOAD_DIR)]
+    all_files: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if not path.is_file() or path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                continue
+            key = path.resolve()
+            if key in seen:
+                continue
+            seen.add(key)
+            all_files.append(path)
     office_stems = {p.stem for p in all_files if p.suffix.lower() in {".pdf", ".docx"}}
     docs: list[Document] = []
     for path in sorted(all_files):
@@ -129,17 +142,19 @@ def ensure_index(
     return stats
 
 
-ALLOWED_UPLOAD_SUFFIXES = {".md", ".txt", ".pdf", ".docx"}
+ALLOWED_UPLOAD_SUFFIXES = set(SUPPORTED_SUFFIXES)
 
 
 def _upload_dir() -> Path:
-    return Path(os.getenv("RAG_UPLOAD_DIR", Path(config.DATA_DIR) / "uploads"))
+    folder = Path(config.UPLOAD_DIR)
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
 def save_uploaded_file(filename: str, data: bytes) -> Path:
     suffix = Path(filename).suffix.lower()
     if suffix not in ALLOWED_UPLOAD_SUFFIXES:
-        raise ValueError(f"不支持 {suffix}，请上传 md / txt / pdf / docx。")
+        raise ValueError(f"不支持 {suffix}，请上传 pdf / docx / md / txt / png / jpg。")
     folder = _upload_dir()
     folder.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]+", "_", Path(filename).stem)[:80] or "file"

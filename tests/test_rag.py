@@ -35,6 +35,25 @@ def test_load_and_split_sample_kb():
     assert "400-000-8888" in joined
 
 
+def test_docx_tables_are_loaded(tmp_path):
+    from docx import Document as DocxFile
+    from rag.loaders import load_path
+
+    path = tmp_path / "yibao.docx"
+    doc = DocxFile()
+    doc.add_heading("职工医保", level=1)
+    table = doc.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "项目"
+    table.cell(0, 1).text = "报销"
+    table.cell(1, 0).text = "普通门诊"
+    table.cell(1, 1).text = "纳入统筹基金支付"
+    doc.save(path)
+    loaded = load_path(path)
+    blob = " ".join(d.page_content for d in loaded)
+    assert "普通门诊" in blob
+    assert "统筹" in blob
+
+
 def test_hashed_embeddings_are_normalized_and_sensitive():
     emb = HashedNgramEmbeddings(dim=64)
     v1 = emb.embed_query("活期利率")
