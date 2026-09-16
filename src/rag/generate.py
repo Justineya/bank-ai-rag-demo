@@ -18,6 +18,20 @@ from rag.textutil import lexical_overlap
 
 REFUSAL_EMPTY = "资料中没有检索到可用段落，因此不能编造答案。知识库未收录该问题，请换手册里的产品规则再问。"
 REFUSAL_WEAK = "资料中没有提到与问题对应的内容，不能编造利率、牌价或承诺。"
+REFUSAL_UNCITED = "答案没有点名任何资料，已降级为拒答，避免把未引用内容当成依据。"
+REFUSAL_NUMBER = "答案里的数字无法在引用摘句中找到，已拒答，防止编造利率或额度。"
+REFUSAL_PROMISE = "检测到保证收益 / 保本 / 稳赚类表述，教室不会输出承诺话术。"
+
+PROMISE_MARKS = (
+    "保证收益",
+    "保本保息",
+    "保本保收益",
+    "稳赚",
+    "一定能赚",
+    "承诺保本",
+    "不会亏损",
+    "保证年化",
+)
 
 SYSTEM_PROMPT = """你是星河银行的知识库助手。只能根据给定资料回答。
 如果资料里没有答案，明确说「资料中没有提到」，不要编造利率、额度或电话。
@@ -73,7 +87,18 @@ class ChatModelGenerator:
 
 def is_expired_doc(doc: Document) -> bool:
     blob = doc.page_content or ""
-    return any(mark in blob for mark in ("已废止", "失效日", "过期数字", "禁止对客"))
+    return any(
+        mark in blob
+        for mark in (
+            "已废止",
+            "失效日",
+            "过期数字",
+            "禁止对客",
+            "非制度",
+            "宣传口径",
+            "内部邮件",
+        )
+    )
 
 
 def prefer_effective_docs(docs: list[Document]) -> list[Document]:
@@ -106,6 +131,25 @@ def out_of_coverage(question: str, docs: list[Document]) -> bool:
     return False
 
 
+def _has_promise(text: str) -> bool:
+    blob = text or ""
+    return any(mark in blob for mark in PROMISE_MARKS)
+
+
+def numbers_missing_from_cites(answer: str, docs: list[Document]) -> list[str]:
+    atoms = _numeric_atoms(answer)
+    if not atoms:
+        return []
+    blob = "\n".join(d.page_content for d in docs)
+    return [atom for atom in atoms if atom not in blob]
+
+
+def _numeric_atoms(text: str) -> list[str]:
+    found = re.findall(r"\d+(?:\.\d+)?%", text or "")
+    found += re.findall(r"\d{3,4}-\d{3,4}-\d{4}", text or "")
+    return found
+
+
 def asked_number_missing(question: str, docs: list[Document]) -> bool:
     rates = re.findall(r"\d+(?:\.\d+)?%", question or "")
     if not rates:
@@ -131,6 +175,9 @@ def postprocess_answer(answer: str, question: str, docs: list[Document]) -> tupl
     if asked_number_missing(question, ordered):
         notes.append("invented_number")
         return REFUSAL_WEAK, notes
+    if _has_promise(text):
+        notes.append("promise_block")
+        return REFUSAL_PROMISE, notes
     if "```" in text:
         text = text.replace("```markdown", "").replace("```", "").strip()
         notes.append("strip_fence")
@@ -140,6 +187,15 @@ def postprocess_answer(answer: str, question: str, docs: list[Document]) -> tupl
             idx = docs.index(ordered[0]) + 1 if ordered[0] in docs else 1
             text = text + f" (资料{idx})"
             notes.append("append_cite")
+            has_cite = True
+        else:
+            notes.append("uncited_refuse")
+            return REFUSAL_UNCITED, notes
+    if has_cite and not _is_refusal(text):
+        missing = numbers_missing_from_cites(text, docs)
+        if missing:
+            notes.append("number_not_in_cite")
+            return REFUSAL_NUMBER, notes
     return text, notes
 
 
@@ -199,7 +255,16 @@ def is_refusal(text: str) -> bool:
     blob = text or ""
     return any(
         mark in blob
-        for mark in ("资料中没有", "不能编造", "没有检索到", "没有找到可引用", "未收录该问题")
+        for mark in (
+            "资料中没有",
+            "不能编造",
+            "没有检索到",
+            "没有找到可引用",
+            "未收录该问题",
+            "已降级为拒答",
+            "无法在引用",
+            "承诺话术",
+        )
     )
 
 

@@ -15,9 +15,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from rag import config
 from rag.embeddings import build_embeddings
-
-
 from rag.loaders import SUPPORTED_SUFFIXES, load_path
+from time import perf_counter
 
 
 def load_documents(data_dir: Path | None = None) -> list[Document]:
@@ -71,7 +70,37 @@ def split_documents(
         chunk_overlap=chunk_overlap if chunk_overlap is not None else config.CHUNK_OVERLAP,
         separators=["\n\n", "\n", "。", "；", "，", " ", ""],
     )
-    return splitter.split_documents(sections)
+    chunks = splitter.split_documents(sections)
+    overlap = chunk_overlap if chunk_overlap is not None else config.CHUNK_OVERLAP
+    prev_text = ""
+    prev_source = ""
+    for i, chunk in enumerate(chunks):
+        text = chunk.page_content
+        heading = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+        shared = _shared_prefix_from_prev(prev_text, text) if prev_source == str(chunk.metadata.get("source")) else ""
+        chunk.metadata = {
+            **chunk.metadata,
+            "chunk_index": i + 1,
+            "section": heading[:80],
+            "overlap_chars": len(shared),
+            "overlap_preview": shared[:80],
+            "chunk_size_setting": chunk_size or config.CHUNK_SIZE,
+            "chunk_overlap_setting": overlap,
+        }
+        prev_text = text
+        prev_source = str(chunk.metadata.get("source"))
+    return chunks
+
+
+def _shared_prefix_from_prev(prev: str, curr: str) -> str:
+    """当前 chunk 开头与上一段结尾重合的文字（用来看见 overlap）。"""
+    if not prev or not curr:
+        return ""
+    max_n = min(len(prev), len(curr))
+    for n in range(max_n, 0, -1):
+        if curr.startswith(prev[-n:]):
+            return prev[-n:]
+    return ""
 
 
 def get_vectorstore(reset: bool = False) -> Chroma:
@@ -100,11 +129,14 @@ def build_index(
     chunk_overlap: int | None = None,
 ) -> dict:
     extra = extra_docs or []
+    t0 = perf_counter()
     docs = load_documents(data_dir) + extra
     file_types = sorted({str(d.metadata.get("file_type", "unknown")) for d in docs})
     chunks = split_documents(docs, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    t1 = perf_counter()
     store = get_vectorstore(reset=reset)
     ids = store.add_documents(chunks)
+    t2 = perf_counter()
     return {
         "documents": len(docs),
         "chunks": len(chunks),
@@ -113,6 +145,8 @@ def build_index(
         "embedding_backend": config.EMBEDDING_BACKEND,
         "vector_store": "chroma",
         "file_types": file_types,
+        "split_ms": round((t1 - t0) * 1000, 1),
+        "embed_ms": round((t2 - t1) * 1000, 1),
     }
 
 

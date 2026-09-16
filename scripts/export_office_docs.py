@@ -73,11 +73,15 @@ def md_to_docx(md_path: Path, docx_path: Path) -> None:
 def main() -> None:
     md_to_pdf(KB / "06-housing-loan-rules.md", KB / "06-housing-loan-rules.pdf")
     md_to_docx(KB / "07-credit-card-charter.md", KB / "07-credit-card-charter.docx")
+    md_to_pdf(KB / "08-rates-superseded.md", KB / "08-rates-superseded.pdf")
+    md_to_pdf(KB / "10-prepay-internal.md", KB / "10-prepay-internal.pdf")
     writer = PdfWriter()
     writer.append(str(KB / "06-housing-loan-rules.pdf"))
     assert Path(KB / "06-housing-loan-rules.pdf").stat().st_size > 0
     print("wrote", KB / "06-housing-loan-rules.pdf")
     print("wrote", KB / "07-credit-card-charter.docx")
+    print("wrote", KB / "08-rates-superseded.pdf")
+    print("wrote", KB / "10-prepay-internal.pdf")
 
 
 if __name__ == "__main__":

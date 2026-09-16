@@ -33,6 +33,7 @@ def test_load_and_split_sample_kb():
     assert "docx" in types
     assert "违约金" in joined
     assert "400-000-8888" in joined
+    assert "宣传口径" in joined or "非制度" in joined
 
 
 def test_docx_tables_are_loaded(tmp_path):
@@ -308,6 +309,69 @@ def test_cited_clips_hide_uncited_and_excerpt_pdf():
 
     none = cited_clips("资料中没有提到股价。", [pdf, other], "明天股价会涨吗")
     assert none == []
+
+
+def test_chunk_overlap_and_explain_hits():
+    from rag.ingest import load_documents, split_documents
+    from rag.retrieve import explain_hits
+
+    docs = load_documents(KB)
+    small = split_documents(docs, chunk_size=140, chunk_overlap=40)
+    big = split_documents(docs, chunk_size=700, chunk_overlap=80)
+    assert len(small) >= len(big)
+    assert any((c.metadata.get("overlap_chars") or 0) > 0 for c in small)
+    q = "提前还房贷要不要违约金？"
+    hit_small = explain_hits(q, small, k=3)
+    hit_big = explain_hits(q, big, k=3)
+    assert hit_small and hit_big
+    blob = (hit_small[0]["preview"] or "") + " ".join(hit_small[0]["matched"])
+    assert "违约金" in blob or "提前" in blob
+    assert hit_small[0]["why"]
+
+
+def test_hybrid_rrf_has_both_ranks(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma_hy"))
+    monkeypatch.setenv("RAG_DATA_DIR", str(KB))
+    from rag import config
+    from rag.ingest import build_index
+    from rag.retrieve import hybrid_table
+
+    config.CHROMA_DIR = tmp_path / "chroma_hy"
+    config.DATA_DIR = KB
+    config.EMBEDDING_BACKEND = "hashed"
+    build_index(reset=True, data_dir=KB)
+    table = hybrid_table("活期利率是多少？", fetch_k=8)
+    assert table["bm25"] and table["vector"] and table["fused"]
+    assert table["rows"]
+    top = table["rows"][0]
+    assert top["融合名次"] == 1
+    assert top["BM25名次"] != "—" or top["向量名次"] != "—"
+
+
+def test_postprocess_hardening_promise_number_uncited():
+    from rag.generate import (
+        REFUSAL_NUMBER,
+        REFUSAL_PROMISE,
+        REFUSAL_UNCITED,
+        postprocess_answer,
+    )
+
+    docs = [Document(page_content="星河活期年利率 0.20%。", metadata={"source": "01-savings.md"})]
+    promised, notes = postprocess_answer("本产品保证收益稳赚不赔。 (资料1)", "活期利率", docs)
+    assert promised == REFUSAL_PROMISE
+    assert "promise_block" in notes
+
+    numbered, n2 = postprocess_answer("内部优惠年利率 9.90%。 (资料1)", "活期利率", docs)
+    assert numbered == REFUSAL_NUMBER
+    assert "number_not_in_cite" in n2
+
+    other = [
+        Document(page_content="大厅取号须知。", metadata={"source": "hall.md"}),
+        Document(page_content="积分商城可兑里程。", metadata={"source": "points.md"}),
+    ]
+    uncited, n3 = postprocess_answer("可以免费去贵宾厅。", "积分怎么兑换", other)
+    assert uncited == REFUSAL_UNCITED
+    assert "uncited_refuse" in n3
 
 
 def test_eval_set_covers_p0_cases():

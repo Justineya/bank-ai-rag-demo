@@ -113,10 +113,11 @@ python cli.py --eval
 4. 运行 `python cli.py --rebuild` 后看 `chroma_db/` 是否生成。
 5. 读 `src/rag/generate.py`：对比抽取式回答、Chat Prompt、以及 `postprocess_answer`。
 6. 读 `src/rag/rerank.py`：召回多条后再精排。小语料上名次可能不变，这是正常的。
-7. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
+7. 检索页选 Hybrid：一张表看 BM25 / 向量 / 融合名次。
 8. 索引页默认已是句向量。勾选「教学开关：哈希」可对照不下载模型时的步骤；换后端后必须重建。
 9. 开场页点「跑评测」：命中率、拒答正确率、引用点名率。命令行：`python cli.py --rebuild --eval`。
-10. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
+10. 切块页拖 `chunk_size` / `overlap`，立刻看当前问题命中哪一段、重叠多少字。
+11. 知识库里的营销页和过期 PDF 是噪声，用来演示「以哪份为准」。
 
 ## 测试
 

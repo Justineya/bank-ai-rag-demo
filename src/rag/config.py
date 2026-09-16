@@ -21,7 +21,7 @@ CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "400"))
 CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
 TOP_K = int(os.getenv("RAG_TOP_K", "4"))
 FETCH_K = int(os.getenv("RAG_FETCH_K", "16"))
-# bm25 | vector
+# bm25 | vector | hybrid
 RETRIEVER = os.getenv("RAG_RETRIEVER", "bm25").lower()
 # bge | lexical | none
 RERANKER = os.getenv("RAG_RERANKER", "bge").lower()

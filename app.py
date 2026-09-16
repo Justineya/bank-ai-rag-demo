@@ -5,6 +5,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from time import perf_counter
 
 import streamlit as st
 from langchain_core.documents import Document
@@ -36,7 +37,7 @@ from rag.ingest import (
 from rag.loaders import load_path
 from rag.pipeline import keep_live_demand_rate
 from rag.rerank import rerank_hits
-from rag.retrieve import retrieve_ranked
+from rag.retrieve import explain_hits, hybrid_table, retrieve_ranked
 from rag.textutil import tokenize
 
 STEPS = [
@@ -268,7 +269,7 @@ def _step_intro() -> None:
 | 生成 | Agnes 等 LLM + 检索上下文 | 同样，但有评测、缓存、审计 |
 | 后处理 | 补引用、空检索拒答、冲突稿后置 | 忠实度检查、敏感信息过滤 |
 
-教室仍对照「教学 vs 生产」。哈希快，是因为不下载神经网络；默认改成真句向量，作品集才站得住。
+教室仍对照「教学 vs 生产」。知识库故意放了营销页和过期 PDF（活期 1.50%、提前还款免违约金），用来演示以哪份为准。
 """
     )
     _eval_panel()
@@ -396,7 +397,7 @@ def _step_split() -> None:
     _teach(
         "整本手册太长，无法整本拿去比相似度。按 `##` 标题切开，过长的再按字数切，并留 overlap，避免一句话被切断。",
         "切块决定「一次能命中多大范围」。切太大，随心贷和房贷挤在一起；切太碎，一条规则裂成半句。",
-        "拖动切块大小，看数量变化。点开含「提前还款」的 chunk。改完大小后，要到下一步点「重建」才会写进仓库。",
+        "拖动切块大小和 overlap，下面立刻用当前问题做一次内存 BM25，看命中段和重叠文字怎么变。不必先重建索引。",
     )
     c1, c2 = st.columns(2)
     with c1:
@@ -409,10 +410,34 @@ def _step_split() -> None:
         chunk_overlap=st.session_state.chunk_overlap,
     )
     st.metric("当前切出的 chunk 数", len(chunks), f"来自 {len(docs)} 篇文档")
+    question = _question()
+    st.markdown(f"**当前问题：** `{question}` · 用这组切块立刻看命中（还没写入 Chroma）")
+    hits = explain_hits(question, chunks, k=5)
+    if hits:
+        st.dataframe(
+            [
+                {
+                    "chunk": row["chunk"],
+                    "文件": row["source"],
+                    "分数": row["score"],
+                    "重叠字": row["overlap_chars"],
+                    "为什么命中": row["why"],
+                    "重叠预览": row["overlap_preview"] or "—",
+                    "开头": row["preview"],
+                }
+                for row in hits
+            ],
+            hide_index=True,
+            use_container_width=True,
+        )
     for i, chunk in enumerate(chunks):
         src = Path(str(chunk.metadata.get("source", ""))).name
         title = chunk.page_content.strip().splitlines()[0][:40]
-        with st.expander(f"chunk {i + 1} · {src} · {title}", expanded=(i == 0)):
+        overlap_n = chunk.metadata.get("overlap_chars") or 0
+        with st.expander(f"chunk {i + 1} · {src} · 重叠 {overlap_n} 字 · {title}", expanded=(i == 0)):
+            ov = chunk.metadata.get("overlap_preview") or ""
+            if ov:
+                st.caption("与上一段重合的开头：" + ov)
             st.write(chunk.page_content)
             st.caption(f"{len(chunk.page_content)} 字")
 
@@ -455,6 +480,13 @@ def _step_index() -> None:
         a.metric("文档", stats["documents"])
         b.metric("chunk", stats["chunks"])
         c.metric("向量库", stats.get("vector_store", "chroma"))
+        if stats.get("embed_ms") is not None:
+            d1, d2 = st.columns(2)
+            d1.metric("切块耗时", f"{stats.get('split_ms', 0)} ms")
+            d2.metric("嵌入写入耗时", f"{stats.get('embed_ms', 0)} ms")
+        st.caption(
+            "教学环境曾默认哈希：不下载模型、秒级看完「文本→向量」。作品集默认句向量更接近生产；慢是因为每段都过神经网络。"
+        )
         types = stats.get("file_types") or []
         if types:
             st.caption("已解析格式：" + "、".join(types))
@@ -589,7 +621,8 @@ def _step_retrieve() -> None:
     _teach(
         "这一步是召回：用 BM25 或向量先多捞若干条，不急着只留最终的 top-k。生产里常召回 20～50 条，再交给重排。手册很小、问题很短时，也可以跳过重排、直接取 top-k。",
         "检索器擅长「别漏」：相关段落如果排在第 8 名，生成器永远看不见。先放大候选池，下一步重排再扔掉噪音。",
-        "把「多召回几条」调大，对照表格。默认仍用 BM25。点开高亮看命中词。下一步才是精排。",
+        "Hybrid = BM25 + 向量两路召回，再用 RRF 合成一张名次表。生产里常这样补「词能中、语义也能中」。",
+        "选 Hybrid 看融合前后名次。哈希向量时变化可能很小；换成句向量后对照更明显。",
     )
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -597,11 +630,14 @@ def _step_retrieve() -> None:
     with c2:
         st.session_state.top_k = st.slider("重排后要留几条 top-k", 1, 8, st.session_state.top_k)
     with c3:
+        modes = ["bm25", "vector", "hybrid"]
+        current = st.session_state.retriever_mode if st.session_state.retriever_mode in modes else "bm25"
         st.session_state.retriever_mode = st.radio(
             "检索器",
-            ["bm25", "vector"],
-            index=0 if st.session_state.retriever_mode == "bm25" else 1,
+            modes,
+            index=modes.index(current),
             horizontal=True,
+            format_func=lambda x: {"bm25": "BM25", "vector": "向量", "hybrid": "Hybrid"}[x],
         )
     if st.session_state.fetch_k < st.session_state.top_k:
         st.session_state.fetch_k = st.session_state.top_k
@@ -665,13 +701,25 @@ def _step_retrieve() -> None:
             {
                 "召回名次": i,
                 "分数": item["score"],
-                "含义": "向量距离(越小越近)" if item.get("score_kind") == "vector_distance" else "BM25(越大越好)",
+                "含义": (
+                    "向量距离(越小越近)"
+                    if item.get("score_kind") == "vector_distance"
+                    else ("RRF 融合(越大越好)" if item.get("score_kind") == "rrf" else "BM25(越大越好)")
+                ),
                 "命中词": "、".join(item["matched"]) or "—",
                 "来源": src,
                 "开头": item["doc"].page_content.strip().splitlines()[0][:32],
             }
         )
     st.dataframe(rows, hide_index=True, use_container_width=True)
+    if st.session_state.retriever_mode == "hybrid":
+        st.markdown("#### Hybrid 融合前后名次")
+        st.caption("同一段在 BM25 / 向量 / RRF 三列里的名次。空着表示这一路没进前 fetch-k。")
+        try:
+            table = hybrid_table(question, fetch_k=st.session_state.fetch_k)
+            st.dataframe(table["rows"][:16], hide_index=True, use_container_width=True)
+        except Exception as exc:
+            st.caption(f"融合表暂时画不出：{exc}")
     st.session_state["ranked"] = ranked
     st.session_state["ranked_query"] = question
     st.caption("上面整张表都会进入下一步重排；生成器仍然只能看见重排后留下的几条。")
@@ -819,6 +867,7 @@ def _step_generate() -> None:
         _render_result_card(question, REFUSAL_EMPTY, [], ["empty_retrieve"], "none", [])
         return
     gen, name = build_generator()
+    t_gen0 = perf_counter()
     try:
         with st.spinner("正在根据检索资料生成（完成后会留下结果卡，不会停在转圈）…"):
             raw = gen.generate(question, docs)
@@ -828,9 +877,17 @@ def _step_generate() -> None:
 
         raw = ExtractiveGenerator().generate(question, docs)
         name = f"{name}（调用失败，回退抽取）"
+    t_gen1 = perf_counter()
     final, notes = postprocess_answer(raw, question, docs)
+    t_gen2 = perf_counter()
     clips = cited_clips(final, docs, question)
-    _render_result_card(question, final, clips, notes, name, docs, raw=raw)
+    stats = st.session_state.get("index_stats") or {}
+    timings = {
+        "embed": stats.get("embed_ms"),
+        "generate": round((t_gen1 - t_gen0) * 1000, 1),
+        "postprocess": round((t_gen2 - t_gen1) * 1000, 1),
+    }
+    _render_result_card(question, final, clips, notes, name, docs, raw=raw, timings=timings)
     unused = len(docs) - len(clips)
     if unused > 0 and clips:
         st.caption(f"检索还拿到 {unused} 段未在答案中引用，已隐藏。")
@@ -851,12 +908,19 @@ def _render_result_card(
     name: str,
     docs: list,
     raw: str | None = None,
+    timings: dict | None = None,
 ) -> None:
     st.markdown("#### 结果卡")
     st.markdown(f"问题：`{question}`")
     st.markdown("##### 答案")
     st.markdown(f'<div class="answer-box">{html.escape(final).replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
     st.caption(f"生成器：`{name}`" + (f" · 后处理：{'、'.join(notes)}" if notes else ""))
+    if timings:
+        cols = st.columns(3)
+        cols[0].metric("嵌入(上次建库)", f"{timings.get('embed') or '—'} ms")
+        cols[1].metric("生成", f"{timings.get('generate')} ms")
+        cols[2].metric("后处理", f"{timings.get('postprocess')} ms")
+        st.caption("教学默认曾用哈希，是因为嵌入只要几毫秒、不下载模型；作品集改句向量后，这一栏才能解释「慢在嵌入/重排」。")
     st.markdown("##### 引用卡片")
     if clips:
         st.caption("资料N · 文件名 · 摘句。只显示答案点名的片段。")
@@ -871,7 +935,9 @@ def _render_result_card(
             """
 - **空检索拒答**：没有资料就不编利率。
 - **弱相关拒答**：命中段落和问题对不上，同样不编。
-- **数字不在资料里**：问题里的利率若手册没有，直接拒答。
+- **数字不在资料里**：问题或答案里的利率若手册/引用没有，直接拒答。
+- **未引用则降级**：补不上 `(资料N)` 就拒答。
+- **承诺类拦截**：保证收益 / 保本 / 稳赚不会输出。
 - **去掉代码围栏 / 补引用**。
 """
         )
