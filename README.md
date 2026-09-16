@@ -16,7 +16,7 @@
 切块 (RecursiveCharacterTextSplitter)
     │  Split
     ▼
-向量 (Hashed n-gram 或 HuggingFace)
+向量 (默认 bge-small-zh；哈希为教学开关)
     │  Embed
     ▼
 Chroma 向量库
@@ -25,7 +25,7 @@ Chroma 向量库
 问题 → BM25 / 向量 多召回 fetch-k    Retrieve
     │
     ▼
-词重叠精排，只留 top-k               Rerank（可选）
+bge-reranker 精排，只留 top-k        Rerank（词重叠为对照开关）
     │
     ▼
 Prompt + LLM / 抽取式回答            Generate
@@ -39,12 +39,14 @@ Prompt + LLM / 抽取式回答            Generate
 | 框架 | LangChain LCEL 风格的模块拆分 | LlamaIndex、自写 cosine |
 | 切块 | `RecursiveCharacterTextSplitter` | 按标题 / 按 token |
 | 检索 | 默认 BM25（jieba 分词） | Chroma 向量检索 `RAG_RETRIEVER=vector` |
-| 重排 | 词重叠 + 标题加权 | Cross-Encoder、bge-reranker |
+| 重排 | 默认 bge-reranker（fetch-16 → top-4） | 词重叠对照 `RAG_RERANKER=lexical` |
 | 向量库 | Chroma（本地目录） | FAISS、pgvector |
+| 向量 | 默认 `BAAI/bge-small-zh-v1.5` | 教学哈希 `EMBEDDING_BACKEND=hashed` |
 | 生成 | 无 Key 时抽取式；有 Key 用 Agnes / OpenAI / Groq | Ollama 本地模型 |
-| 后处理 | 补引用、拒答、去代码围栏 | 忠实度打分、敏感词过滤 |
+| 后处理 | 补引用、拒答、冲突稿后置 | 忠实度打分、敏感词过滤 |
+| 评测 | `data/eval/questions.json` + 教室「跑评测」 | 更大回归集 |
 
-默认走哈希 Embedding + 抽取式生成，所以 **不配 API Key 也能完成闭环**。配上 `OPENAI_API_KEY` 或 `GROQ_API_KEY` 后，生成会切换成对话模型。
+默认真句向量 + Cross-Encoder 重排。哈希 / 词重叠只留教学开关，方便对照「为什么教学环境曾用哈希：不下载模型、秒级看完步骤」。不配 API Key 也能完成检索 + 抽取式回答闭环。
 
 ## 目录
 
@@ -52,14 +54,16 @@ Prompt + LLM / 抽取式回答            Generate
 data/kb/          知识库：Markdown + 住房贷款 PDF + 信用卡章程 Word
 data/kb/uploads/  上传的真实文件（默认不进 Git）
 scripts/          把 Markdown 导出成 PDF/Word
+data/eval/        固定评测集（能答 / 拒答 / 易混 / 跨文档 / 冲突）
 data/terms.txt    jieba 用户词典（产品名）
 src/rag/          流水线源码，一文件一层
   config.py       路径与模型
   embeddings.py   文本 → 向量
   ingest.py       建索引
   retrieve.py     检索（召回）
-  rerank.py       重排
-  generate.py     生成 + 后处理
+  rerank.py       重排（bge / 词重叠）
+  generate.py     生成 + 后处理 + 结果卡字段
+  eval.py         一键跑分
   pipeline.py     ask() 入口
 cli.py            命令行
 app.py            Streamlit 讲解式教室
@@ -98,6 +102,7 @@ streamlit run app.py
 ```bash
 python cli.py --rebuild
 python cli.py "活期利率是多少？"
+python cli.py --eval
 ```
 
 ## 建议的学习顺序
@@ -109,8 +114,9 @@ python cli.py "活期利率是多少？"
 5. 读 `src/rag/generate.py`：对比抽取式回答、Chat Prompt、以及 `postprocess_answer`。
 6. 读 `src/rag/rerank.py`：召回多条后再精排。小语料上名次可能不变，这是正常的。
 7. 设置 `RAG_RETRIEVER=vector` 重建后再问同一问题，看排序如何变化。
-8. 索引页勾选「句向量」：Cloud 会按 `requirements.txt` 安装 `sentence-transformers`，第一次重建索引会下载模型，可能要等几分钟。
-9. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
+8. 索引页默认已是句向量。勾选「教学开关：哈希」可对照不下载模型时的步骤；换后端后必须重建。
+9. 开场页点「跑评测」：命中率、拒答正确率、引用点名率。命令行：`python cli.py --rebuild --eval`。
+10. 换一篇自己的 Markdown 放进 `data/kb`，把产品名写入 `data/terms.txt`，重建索引。
 
 ## 测试
 

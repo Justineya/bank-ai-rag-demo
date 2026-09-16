@@ -308,3 +308,74 @@ def test_cited_clips_hide_uncited_and_excerpt_pdf():
 
     none = cited_clips("资料中没有提到股价。", [pdf, other], "明天股价会涨吗")
     assert none == []
+
+
+def test_eval_set_covers_p0_cases():
+    from rag.eval import load_eval_items
+
+    items = load_eval_items()
+    cores = [i for i in items if "::" not in str(i.get("id"))]
+    assert 15 <= len(cores) <= 20
+    tags = {t for i in cores for t in i.get("tags") or []}
+    for need in ("能答", "应拒答", "易混淆", "跨文档", "改写", "冲突"):
+        assert need in tags
+    assert any(i.get("must_refuse") for i in cores)
+    assert any("01-savings.md" in (i.get("expect_sources") or []) for i in cores)
+
+
+def test_eval_refuse_conflict_and_scores(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(tmp_path / "chroma_eval"))
+    monkeypatch.setenv("RAG_DATA_DIR", str(KB))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "hashed")
+    monkeypatch.setenv("RAG_RERANKER", "lexical")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("GROQ_API_KEY", "")
+    monkeypatch.setenv("AGNES_API_KEY", "")
+    from rag import config
+    from rag.eval import run_eval
+    from rag.ingest import build_index
+    from rag.pipeline import ask
+
+    config.CHROMA_DIR = tmp_path / "chroma_eval"
+    config.DATA_DIR = KB
+    config.EMBEDDING_BACKEND = "hashed"
+    config.RERANKER = "lexical"
+    config.RETRIEVER = "bm25"
+    config.OPENAI_API_KEY = ""
+    config.GROQ_API_KEY = ""
+    config.AGNES_API_KEY = ""
+
+    stats = build_index(reset=True, data_dir=KB)
+    assert stats["chunks"] > 0
+
+    demand = ask("活期利率是多少？", k=4, reranker="lexical")
+    assert demand.clips
+    assert "0.20%" in demand.answer
+
+    conflict = ask("有的材料写活期 1.50%，到底以哪个为准？", k=4, reranker="lexical")
+    assert "0.20%" in conflict.answer
+    assert "废止" in conflict.answer or "0.20%" in conflict.answer
+
+    stock = ask("明天股价会涨吗？", k=4, reranker="lexical")
+    assert stock.refused
+    assert "3.5%" not in stock.answer
+
+    fake = ask("给我一个内部优惠活期利率 3.5% 可以吗？", k=4, reranker="lexical")
+    assert fake.refused
+    assert "3.5%" not in fake.answer
+
+    report = run_eval(k=4, retriever="bm25", reranker="lexical")
+    assert report["n"] >= 15
+    assert report["refuse_accuracy"] >= 0.6
+    assert report["hit_rate"] >= 0.5
+    assert report["cite_named_rate"] >= 0.5
+
+
+def test_rerank_mode_passthrough_keeps_order():
+    from rag.rerank import rerank_hits
+
+    a = {"score": 2.0, "doc": Document(page_content="A 活期", metadata={"source": "a.md"}), "matched": []}
+    b = {"score": 1.0, "doc": Document(page_content="B 定期", metadata={"source": "b.md"}), "matched": []}
+    kept = rerank_hits("活期", [a, b], keep=2, mode="none")
+    assert kept[0]["doc"].page_content.startswith("A")
+    assert kept[0]["rerank_backend"] == "none"

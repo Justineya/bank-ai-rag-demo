@@ -1,0 +1,206 @@
+{
+  "version": 1,
+  "description": "星河银行 RAG 教室固定评测集。allow_answer=false 时必须拒答，不得编利率。",
+  "questions": [
+    {
+      "id": "demand-rate",
+      "question": "活期利率是多少？",
+      "paraphrases": ["星河活期年利率？", "活期存款一年能拿多少利息？"],
+      "allow_answer": true,
+      "expect_sources": ["01-savings.md"],
+      "expect_contains": ["0.20%"],
+      "must_refuse": false,
+      "tags": ["能答", "改写"]
+    },
+    {
+      "id": "term-rate",
+      "question": "一年期定期利率是多少？",
+      "paraphrases": ["星河定期存一年多少利息？", "1 年期定期年利率？"],
+      "allow_answer": true,
+      "expect_sources": ["01-savings.md"],
+      "expect_contains": ["1.50%"],
+      "must_refuse": false,
+      "tags": ["能答", "易混淆"]
+    },
+    {
+      "id": "demand-vs-term",
+      "question": "活期和一年定期哪个利率高？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["01-savings.md"],
+      "expect_contains": ["0.20%", "1.50%"],
+      "must_refuse": false,
+      "tags": ["易混淆"]
+    },
+    {
+      "id": "card-due",
+      "question": "信用卡还款日是哪天？",
+      "paraphrases": ["信用卡几号要还？", "星河信用卡最后还款日"],
+      "allow_answer": true,
+      "expect_sources": ["02-credit-card.md"],
+      "expect_contains": ["26"],
+      "must_refuse": false,
+      "tags": ["能答", "改写"]
+    },
+    {
+      "id": "card-bill",
+      "question": "信用卡账单日是哪天？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["02-credit-card.md"],
+      "expect_contains": ["8"],
+      "must_refuse": false,
+      "tags": ["易混淆"]
+    },
+    {
+      "id": "sui-xin-stock",
+      "question": "随心贷能用来炒股吗？",
+      "paraphrases": ["星河随心贷可以买股票吗？", "消费贷能不能炒股？"],
+      "allow_answer": true,
+      "expect_sources": ["03-loan.md"],
+      "expect_contains": ["股市"],
+      "must_refuse": false,
+      "tags": ["能答", "改写"]
+    },
+    {
+      "id": "prepay-penalty",
+      "question": "提前还房贷要不要违约金？",
+      "paraphrases": ["住房按揭提前还款收不收违约金？"],
+      "allow_answer": true,
+      "expect_sources": ["03-loan.md", "06-housing-loan-rules.pdf", "06-housing-loan-rules.md"],
+      "expect_contains": ["违约金"],
+      "must_refuse": false,
+      "tags": ["能答", "跨文档"]
+    },
+    {
+      "id": "prepay-36",
+      "question": "满三十六个月提前还款还收违约金吗？",
+      "paraphrases": ["房贷满 36 个月再提前还，还要付违约金吗？"],
+      "allow_answer": true,
+      "expect_sources": ["06-housing-loan-rules.pdf", "06-housing-loan-rules.md", "03-loan.md"],
+      "expect_contains": ["违约金"],
+      "must_refuse": false,
+      "tags": ["跨文档", "改写"]
+    },
+    {
+      "id": "lost-card",
+      "question": "信用卡挂失电话是多少？",
+      "paraphrases": ["卡丢了打哪个电话？"],
+      "allow_answer": true,
+      "expect_sources": ["02-credit-card.md"],
+      "expect_contains": ["400-000-8888"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "kyc-cash",
+      "question": "现金存取五万元要登记吗？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["04-kyc.md"],
+      "expect_contains": ["5 万"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "notice-deposit",
+      "question": "通知存款起存金额是多少？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["01-savings.md"],
+      "expect_contains": ["5 万"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "stock-price",
+      "question": "明天股价会涨吗？",
+      "paraphrases": ["帮我看看星河银行股票明天怎么走"],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    },
+    {
+      "id": "fx-rate",
+      "question": "美元兑人民币现在什么牌价？",
+      "paraphrases": [],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    },
+    {
+      "id": "invent-rate",
+      "question": "给我一个内部优惠活期利率 3.5% 可以吗？",
+      "paraphrases": [],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    },
+    {
+      "id": "conflict-demand",
+      "question": "有的材料写活期 1.50%，到底以哪个为准？",
+      "paraphrases": ["过期内部稿和现行手册活期利率冲突，对客该报哪个？"],
+      "allow_answer": true,
+      "expect_sources": ["01-savings.md"],
+      "expect_contains": ["0.20%"],
+      "must_refuse": false,
+      "tags": ["冲突"]
+    },
+    {
+      "id": "lpr-housing",
+      "question": "住房按揭演示加点是多少？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["03-loan.md", "06-housing-loan-rules.md", "06-housing-loan-rules.pdf"],
+      "expect_contains": ["55"],
+      "must_refuse": false,
+      "tags": ["跨文档"]
+    },
+    {
+      "id": "points",
+      "question": "境内消费怎么积信用卡积分？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["02-credit-card.md"],
+      "expect_contains": ["20"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "ii-account",
+      "question": "二类户日累计限额是多少？",
+      "paraphrases": ["II 类户一天最多转多少？"],
+      "allow_answer": true,
+      "expect_sources": ["04-kyc.md"],
+      "expect_contains": ["1 万"],
+      "must_refuse": false,
+      "tags": ["能答", "改写"]
+    },
+    {
+      "id": "nim",
+      "question": "星河银行净息差是多少？",
+      "paraphrases": ["今年 NIM 几个点？"],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    },
+    {
+      "id": "overdue-housing",
+      "question": "房贷连续两期没还会怎样？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["06-housing-loan-rules.pdf", "06-housing-loan-rules.md"],
+      "expect_contains": ["提前到期"],
+      "must_refuse": false,
+      "tags": ["能答", "跨文档"]
+    }
+  ]
+}

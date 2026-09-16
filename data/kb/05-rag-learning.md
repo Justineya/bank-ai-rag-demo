@@ -10,7 +10,7 @@ RAG 的全称是 Retrieval-Augmented Generation，即检索增强生成。
 
 1. Load：读取 `data/kb` 下的 Markdown 文档。
 2. Split：按字符切成有重叠的 chunk，避免一段话被拦腰截断。
-3. Embed：把 chunk 变成向量。本 Demo 默认用哈希向量，可切换成 HuggingFace 句向量。
+3. Embed：把 chunk 变成向量。默认中文句向量 bge-small-zh；哈希向量是教学开关。
 4. Store：写入 Chroma 向量库，便于重复查询。
 5. Retrieve：把用户问题也向量化，取最相似的 top-k 个 chunk。
 6. Generate：把 chunk 填进 Prompt，让 LLM 只根据资料回答；没有 API Key 时使用抽取式回答。

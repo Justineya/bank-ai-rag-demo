@@ -1,7 +1,7 @@
 """向量层。
 
-默认 hashed：不下载模型，立刻能跑通「文本 → 向量 → 相似度」这一课。
-切换 huggingface 后，中文语义检索会明显更好（需安装 sentence-transformers）。
+默认中文句向量（bge-small-zh）。哈希向量是教学开关：不下载模型、秒级看懂
+「文本 → 向量 → 相似度」，但不是生产 Embedding。
 """
 
 from __future__ import annotations
@@ -12,6 +12,8 @@ from typing import List
 from langchain_core.embeddings import Embeddings
 
 from rag import config
+
+LAST_ERROR = ""
 
 
 class HashedNgramEmbeddings(Embeddings):
@@ -50,13 +52,26 @@ class HashedNgramEmbeddings(Embeddings):
 
 
 def build_embeddings() -> Embeddings:
-    if config.EMBEDDING_BACKEND in {"huggingface", "sentence-transformers", "st"}:
-        try:
-            from langchain_huggingface import HuggingFaceEmbeddings
-        except ImportError as exc:
-            raise ImportError(
-                "句向量依赖未安装。Streamlit Cloud 只安装仓库里 requirements.txt 列出的包；"
-                "请确认该文件含 sentence-transformers 与 langchain-huggingface，并在 Cloud 里 Reboot 重新安装。"
-            ) from exc
-        return HuggingFaceEmbeddings(model_name=config.HF_EMBEDDING_MODEL)
-    return HashedNgramEmbeddings()
+    global LAST_ERROR
+    LAST_ERROR = ""
+    if config.EMBEDDING_BACKEND in {"hashed", "hash", "ngram"}:
+        return HashedNgramEmbeddings()
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings
+    except ImportError as exc:
+        LAST_ERROR = (
+            "句向量依赖未安装。请确认 requirements.txt 含 sentence-transformers "
+            "与 langchain-huggingface，Cloud 需 Reboot。"
+        )
+        raise ImportError(LAST_ERROR) from exc
+    try:
+        return HuggingFaceEmbeddings(
+            model_name=config.HF_EMBEDDING_MODEL,
+            model_kwargs={"device": "cpu"},
+            encode_kwargs={"normalize_embeddings": True},
+        )
+    except Exception as exc:
+        LAST_ERROR = f"句向量模型加载失败（{exc}）。已回退教学哈希，便于继续走完教室。"
+        config.EMBEDDING_BACKEND = "hashed"
+        config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
+        return HashedNgramEmbeddings()

@@ -12,7 +12,15 @@ from langchain_core.documents import Document
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
-from rag.generate import preview_prompt, build_generator, postprocess_answer, cited_clips
+from rag.eval import run_eval
+from rag.generate import (
+    REFUSAL_EMPTY,
+    preview_prompt,
+    build_generator,
+    postprocess_answer,
+    cited_clips,
+    prefer_effective_docs,
+)
 from rag.ingest import (
     build_index,
     ensure_index,
@@ -26,6 +34,7 @@ from rag.ingest import (
     vector_inventory,
 )
 from rag.loaders import load_path
+from rag.pipeline import keep_live_demand_rate
 from rag.rerank import rerank_hits
 from rag.retrieve import retrieve_ranked
 from rag.textutil import tokenize
@@ -37,8 +46,8 @@ STEPS = [
     ("索引", "Embed + Store：写进仓库"),
     ("提问", "把问题变成检索词"),
     ("检索", "Retrieve：先多召回"),
-    ("重排", "教学用词重叠精排"),
-    ("生成", "Generate + 后处理"),
+    ("重排", "默认 bge-reranker"),
+    ("生成", "结果卡 + 拒答"),
 ]
 
 SAMPLE_QUESTIONS = [
@@ -103,6 +112,7 @@ def _init_state() -> None:
         "top_k": config.TOP_K,
         "fetch_k": config.FETCH_K,
         "retriever_mode": config.RETRIEVER,
+        "reranker_mode": config.RERANKER,
         "index_stats": None,
         "extra_note": "",
         "index_ready": False,
@@ -244,7 +254,7 @@ def _step_intro() -> None:
     c1, c2, c3 = st.columns(3)
     c1.metric("知识库", "Markdown + PDF + Word")
     c2.metric("向量库", "Chroma", "嵌入式向量数据库")
-    c3.metric("默认向量", "哈希(快)", "可换成句向量模型")
+    c3.metric("默认向量", "bge-small-zh", "哈希仅教学开关")
     st.markdown(
         """
 #### 这是「能跑通的完整流水线」，不是生产系统缩小版聊天框
@@ -252,15 +262,16 @@ def _step_intro() -> None:
 | | 本教室 | 生产常见做法 |
 | --- | --- | --- |
 | 文档 | md / 文本 PDF / docx | 再加扫描件 OCR、权限、版本 |
-| 向量化 | 默认字符哈希，秒级 | 句向量或商业 Embedding，分钟～小时 |
+| 向量化 | 默认 **bge-small-zh**；哈希是教学开关 | 句向量 / 商业 Embedding |
 | 存储 | **Chroma** 本地目录（就是向量库） | pgvector、Milvus、Pinecone 等 |
-| 重排 | 词重叠精排（教学替身） | Cross-Encoder / bge-reranker |
+| 重排 | 默认 **bge-reranker**（top-16→top-4）；词重叠是对照开关 | 更大 Cross-Encoder |
 | 生成 | Agnes 等 LLM + 检索上下文 | 同样，但有评测、缓存、审计 |
-| 后处理 | 补引用、空检索拒答 | 忠实度检查、敏感信息过滤 |
+| 后处理 | 补引用、空检索拒答、冲突稿后置 | 忠实度检查、敏感信息过滤 |
 
-默认哈希快，是为了让你先看懂步骤。真句向量会慢，因为每段都要过神经网络。
+教室仍对照「教学 vs 生产」。哈希快，是因为不下载神经网络；默认改成真句向量，作品集才站得住。
 """
     )
+    _eval_panel()
     st.markdown("#### 整条流水线")
     st.code(
         "文档 → 切块 → 写入仓库(索引) → 问题分词 → 多召回 fetch-k → 重排留 top-k → Prompt 生成 → 后处理",
@@ -415,15 +426,15 @@ def _step_index() -> None:
     st.info("文件属于知识库；这一步只负责 Embed + Store。上传请点顶部「2. 知识库」。")
     if st.session_state.get("uploads_pending_index"):
         st.warning("知识库有新文件或删除尚未写入向量库，请点下面的「重建索引」。")
-    use_hf = st.checkbox(
-        "使用句向量模型（首次下载模型会较慢；依赖已写入 requirements.txt，Cloud 需 Reboot 后才装上）",
-        value=config.EMBEDDING_BACKEND == "huggingface",
+    use_hash = st.checkbox(
+        "教学开关：用哈希向量（不下载模型，立刻能看步骤；默认是 bge-small-zh）",
+        value=config.EMBEDDING_BACKEND in {"hashed", "hash", "ngram"},
     )
-    if use_hf:
-        config.EMBEDDING_BACKEND = "huggingface"
+    if use_hash:
+        config.EMBEDDING_BACKEND = "hashed"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
     else:
-        config.EMBEDDING_BACKEND = "hashed"
+        config.EMBEDDING_BACKEND = "huggingface"
         config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
     last_backend = (st.session_state.index_stats or {}).get("embedding_backend")
     if last_backend and last_backend != config.EMBEDDING_BACKEND:
@@ -688,11 +699,22 @@ def _ensure_ranked(question: str) -> list:
 
 def _step_rerank() -> None:
     _teach(
-        "重排这一步的位置是真的：先多捞再精排。本教室用的分是词重叠 + BM25，不是 bge-reranker。生产里应换成 Cross-Encoder。",
-        "词袋精排和 BM25 几乎看同一类信号，所以经常「名次不变」或只会微调。它用来演示流水线，不能当成上线用的精排模型。",
-        "对照左右表即可。若要换成 bge，应在这一步对 (问题, 段落) 对打分，而不是再算一遍词频。",
+        "先多召回再精排。默认用 bge-reranker 对 (问题, 段落) 打分，只留 top-k 给生成器。",
+        "词重叠精排和 BM25 几乎看同一类信号，经常名次不变——所以只留作对照开关，不当默认。",
+        "左右表对照召回 vs 精排。把开关拨到「词重叠」再问同一题，看名次会不会几乎不动。",
     )
-    st.warning("当前精排规则：归一化召回分 + 词/标题重叠 − 缺词惩罚。没有加载 bge-reranker。")
+    st.session_state.reranker_mode = st.radio(
+        "精排后端",
+        ["bge", "lexical"],
+        index=0 if st.session_state.reranker_mode != "lexical" else 1,
+        horizontal=True,
+        format_func=lambda x: "bge-reranker（默认）" if x == "bge" else "词重叠（教学对照）",
+    )
+    config.RERANKER = st.session_state.reranker_mode
+    if st.session_state.reranker_mode == "lexical":
+        st.warning("对照模式：归一化召回分 + 词/标题重叠。这不是上线用的精排。")
+    else:
+        st.caption("默认：Cross-Encoder `BAAI/bge-reranker-base`，召回约 16 条再留 4 条。第一次会下载模型。")
     question = _question()
     st.markdown(f"正在精排的问题：`{question}`")
     try:
@@ -704,7 +726,17 @@ def _step_rerank() -> None:
         st.warning("召回为空，没有可重排的段落。回到检索步换一个问题。")
         st.session_state["reranked"] = []
         return
-    kept = rerank_hits(question, ranked, keep=st.session_state.top_k)
+    kept = rerank_hits(
+        question,
+        ranked,
+        keep=st.session_state.top_k,
+        mode=st.session_state.reranker_mode,
+    )
+    kept = keep_live_demand_rate(question, ranked, kept)
+    from rag.rerank import LAST_ERROR as RERANK_ERROR
+
+    if RERANK_ERROR:
+        st.warning(RERANK_ERROR)
     st.session_state["reranked"] = kept
     st.session_state["reranked_query"] = question
     left, right = st.columns(2)
@@ -753,65 +785,52 @@ def _step_rerank() -> None:
 
 def _step_generate() -> None:
     _teach(
-        "生成器只能看见精排留下的几段。答案区只写结论；原文以「从文件抽出的卡片」展示，且只展示答案点名的资料N。",
-        "没被点名的段落不该出现在结果里，否则像把检索列表又贴了一遍。PDF 按页摘一句，而不是整页墙。",
-        "先看答案和引用卡片。Prompt 折在下面，需要时再打开。",
+        "生成器只能看见精排留下的几段。本页必须给出完整结果卡：答案、引用卡片、空检索拒答，不会停在「正在回答」。",
+        "没被点名的段落不该出现在结果里。PDF 按页摘一句。手册没有的问题要明确说没有，不能编利率。",
+        "先看结果卡。Prompt 折在下面。需要作品集截图时，用开场页的「跑评测」。",
     )
     ranked = st.session_state.get("reranked")
     question = _question()
-    st.markdown(f"正在回答的问题：`{question}`")
     if not ranked or st.session_state.get("reranked_query") != question:
         try:
             recalled = _ensure_ranked(question)
-            ranked = rerank_hits(question, recalled, keep=st.session_state.top_k)
+            ranked = rerank_hits(
+                question,
+                recalled,
+                keep=st.session_state.top_k,
+                mode=st.session_state.reranker_mode,
+            )
+            ranked = keep_live_demand_rate(question, recalled, ranked)
             st.session_state["reranked"] = ranked
             st.session_state["reranked_query"] = question
         except Exception as exc:
             st.error(f"请先完成索引和检索：{exc}")
+            _render_result_card(
+                question,
+                REFUSAL_EMPTY,
+                [],
+                ["retrieve_error"],
+                "none",
+                [],
+            )
             return
-    docs = [item["doc"] for item in ranked]
+    docs = prefer_effective_docs([item["doc"] for item in ranked])
     if not docs:
-        st.warning("检索为空，生成器没有上下文可用。回到检索步换个问题。")
-        raw = "知识库里没有检索到相关段落，请先运行索引或换一个问法。"
-        final, notes = postprocess_answer(raw, question, docs)
-        st.write(final)
-        st.caption("后处理动作：" + ("、".join(notes) if notes else "无"))
+        _render_result_card(question, REFUSAL_EMPTY, [], ["empty_retrieve"], "none", [])
         return
     gen, name = build_generator()
     try:
-        raw = gen.generate(question, docs)
+        with st.spinner("正在根据检索资料生成（完成后会留下结果卡，不会停在转圈）…"):
+            raw = gen.generate(question, docs)
     except Exception as exc:
-        st.error(f"大模型调用失败（检索结果仍在右侧）。请检查 Key、模型名和 Base URL。详情：{exc}")
+        st.error(f"大模型调用失败。已回退抽取式结果卡。详情：{exc}")
         from rag.generate import ExtractiveGenerator
 
         raw = ExtractiveGenerator().generate(question, docs)
         name = f"{name}（调用失败，回退抽取）"
     final, notes = postprocess_answer(raw, question, docs)
     clips = cited_clips(final, docs, question)
-    st.markdown("#### 答案")
-    st.markdown(f'<div class="answer-box">{html.escape(final).replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
-    st.caption(f"生成器：`{name}`" + (f" · 后处理：{'、'.join(notes)}" if notes else ""))
-    st.markdown("#### 从文件中抽出")
-    if clips:
-        st.caption("只显示答案里写了 (资料N) 的片段。PDF / Word 按页摘录，不是整份文件。")
-        for clip in clips:
-            st.markdown(_clip_html(clip), unsafe_allow_html=True)
-    else:
-        st.info("答案没有引用任何资料，因此不展示原文。若检索为空或模型明确说资料没有，这是预期行为。")
-    with st.expander("发给模型的 Prompt（生成前）"):
-        st.code(preview_prompt(question, docs), language="markdown")
-    with st.expander("后处理做了什么"):
-        st.markdown(
-            """
-- **空检索拒答**：没有资料就不编利率。
-- **去掉代码围栏**：有的模型喜欢包一层 markdown。
-- **补引用**：正文里如果没有 `(资料N)` 且第一段确实相关，才补上。
-- 原文改由上面的文件卡片展示，不再把未引用的 chunk 堆在答案旁边。
-"""
-        )
-        st.caption("本轮实际执行：" + ("、".join(notes) if notes else "无"))
-        with st.expander("模型刚写完、还没后处理的原文"):
-            st.write(raw)
+    _render_result_card(question, final, clips, notes, name, docs, raw=raw)
     unused = len(docs) - len(clips)
     if unused > 0 and clips:
         st.caption(f"检索还拿到 {unused} 段未在答案中引用，已隐藏。")
@@ -821,8 +840,83 @@ def _step_generate() -> None:
         st.warning(
             "现在没有调用大模型，所以答案只是检索到的原文摘录。"
             "在 Streamlit Cloud：App → Settings → Secrets 添加 `AGNES_API_KEY`，可选 `AGNES_MODEL = \"agnes-2.5-flash\"`，然后 Reboot。"
-            "本地可把同样内容放进 `.streamlit/secrets.toml` 或 `.env`。"
         )
+
+
+def _render_result_card(
+    question: str,
+    final: str,
+    clips: list,
+    notes: list,
+    name: str,
+    docs: list,
+    raw: str | None = None,
+) -> None:
+    st.markdown("#### 结果卡")
+    st.markdown(f"问题：`{question}`")
+    st.markdown("##### 答案")
+    st.markdown(f'<div class="answer-box">{html.escape(final).replace(chr(10), "<br>")}</div>', unsafe_allow_html=True)
+    st.caption(f"生成器：`{name}`" + (f" · 后处理：{'、'.join(notes)}" if notes else ""))
+    st.markdown("##### 引用卡片")
+    if clips:
+        st.caption("资料N · 文件名 · 摘句。只显示答案点名的片段。")
+        for clip in clips:
+            st.markdown(_clip_html(clip), unsafe_allow_html=True)
+    else:
+        st.info("空检索或明确拒答：不展示原文，避免把无关段落当成依据。")
+    with st.expander("发给模型的 Prompt（生成前）"):
+        st.code(preview_prompt(question, docs), language="markdown")
+    with st.expander("后处理做了什么"):
+        st.markdown(
+            """
+- **空检索拒答**：没有资料就不编利率。
+- **弱相关拒答**：命中段落和问题对不上，同样不编。
+- **数字不在资料里**：问题里的利率若手册没有，直接拒答。
+- **去掉代码围栏 / 补引用**。
+"""
+        )
+        st.caption("本轮实际执行：" + ("、".join(notes) if notes else "无"))
+        if raw is not None:
+            with st.expander("模型刚写完、还没后处理的原文"):
+                st.write(raw)
+
+
+def _eval_panel() -> None:
+    st.markdown("#### 一键跑评测")
+    st.caption("固定 20 题：能答 / 应拒答 / 活期与定期易混 / 跨文档 / 改写 / 过期利率冲突。截图即可贴作品集。")
+    if st.button("跑评测", type="primary"):
+        with st.spinner("正在按评测集逐题检索并打分…"):
+            try:
+                report = run_eval(
+                    k=st.session_state.top_k,
+                    retriever=st.session_state.retriever_mode,
+                    reranker=st.session_state.reranker_mode,
+                )
+            except Exception as exc:
+                st.error(f"评测失败：{exc}")
+                return
+        st.session_state.eval_report = report
+    report = st.session_state.get("eval_report")
+    if not report:
+        return
+    a, b, c, d = st.columns(4)
+    a.metric("命中率", f"{report['hit_rate']*100:.0f}%", f"{report['n_answerable']} 道应答题")
+    b.metric("拒答正确率", f"{report['refuse_accuracy']*100:.0f}%", f"{report['n_refuse']} 道应拒答")
+    c.metric("引用点名率", f"{report['cite_named_rate']*100:.0f}%", "应答题是否写出资料N")
+    d.metric("总及格率", f"{report['pass_rate']*100:.0f}%", f"{report['n']} 条含改写")
+    table = [
+        {
+            "题号": row["id"],
+            "问题": row["question"],
+            "命中": "是" if row["hit"] else "否",
+            "拒答正确": "是" if row["refuse_ok"] else "否",
+            "点名引用": "是" if row["cited"] else "否",
+            "及格": "是" if row["answer_ok"] else "否",
+            "答案": (row["answer"] or "")[:80],
+        }
+        for row in report["rows"]
+    ]
+    st.dataframe(table, hide_index=True, use_container_width=True)
 
 
 def _pager() -> None:
