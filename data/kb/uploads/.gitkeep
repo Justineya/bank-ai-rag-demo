@@ -1,0 +1,2 @@
+# 把真实 PDF / Word / Markdown 放到这里，教室会一并索引。
+# Streamlit 上传也会写入此目录（云端重启可能清空）。
