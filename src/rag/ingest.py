@@ -81,6 +81,7 @@ def split_documents(
         chunk.metadata = {
             **chunk.metadata,
             "chunk_index": i + 1,
+            "chunk_id": f"{Path(str(chunk.metadata.get('source', 'doc'))).stem}-p{chunk.metadata.get('page') or 1}-c{i + 1}",
             "section": heading[:80],
             "overlap_chars": len(shared),
             "overlap_preview": shared[:80],

@@ -32,6 +32,9 @@ EMBEDDING_BACKEND = os.getenv("EMBEDDING_BACKEND", "huggingface").lower()
 COLLECTION_NAME = os.getenv("RAG_COLLECTION", f"bank_kb_{EMBEDDING_BACKEND}")
 HF_EMBEDDING_MODEL = os.getenv("HF_EMBEDDING_MODEL", "BAAI/bge-small-zh-v1.5")
 
+TENANT = os.getenv("RAG_TENANT", "bank").lower()
+AUDIENCE = os.getenv("RAG_AUDIENCE", "public").lower()
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -47,6 +50,7 @@ def reload() -> None:
     global AGNES_API_KEY, AGNES_BASE_URL, AGNES_MODEL
     global EMBEDDING_BACKEND, COLLECTION_NAME, HF_EMBEDDING_MODEL
     global RETRIEVER, RERANKER, RERANKER_MODEL, TOP_K, FETCH_K
+    global TENANT, AUDIENCE
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -62,3 +66,5 @@ def reload() -> None:
     RERANKER_MODEL = os.getenv("RAG_RERANKER_MODEL", "BAAI/bge-reranker-base")
     TOP_K = int(os.getenv("RAG_TOP_K", "4"))
     FETCH_K = int(os.getenv("RAG_FETCH_K", "16"))
+    TENANT = os.getenv("RAG_TENANT", "bank").lower()
+    AUDIENCE = os.getenv("RAG_AUDIENCE", "public").lower()

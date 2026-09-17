@@ -13,18 +13,19 @@ from langchain_core.documents import Document
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
 from rag import config
-from rag.eval import run_eval
+from rag.audit import export_json, last_event
+from rag.eval import load_eval_items, run_eval
 from rag.generate import (
     REFUSAL_EMPTY,
     preview_prompt,
     build_generator,
+    is_refusal,
     postprocess_answer,
     cited_clips,
     prefer_effective_docs,
 )
 from rag.ingest import (
     build_index,
-    ensure_index,
     extracted_chars,
     list_uploads,
     load_documents,
@@ -35,10 +36,12 @@ from rag.ingest import (
     vector_inventory,
 )
 from rag.loaders import load_path
-from rag.pipeline import keep_live_demand_rate
+from rag.pipeline import keep_audited_premium, keep_live_demand_rate
 from rag.rerank import rerank_hits
 from rag.retrieve import explain_hits, hybrid_table, retrieve_ranked
+from rag.tenants import apply_tenant, current, parse_launch_params
 from rag.textutil import tokenize
+from rag.warmup import warmup_index
 
 STEPS = [
     ("开场", "RAG 在解决什么"),
@@ -51,32 +54,30 @@ STEPS = [
     ("生成", "结果卡 + 拒答"),
 ]
 
-SAMPLE_QUESTIONS = [
-    "活期利率是多少？",
-    "信用卡还款日是哪天？",
-    "随心贷能用来炒股吗？",
-    "提前还房贷要不要违约金？",
-    "PDF 细则里满 36 个月提前还款还收违约金吗？",
-    "明天股价会涨吗？",
-]
-
 
 def main() -> None:
-    st.set_page_config(page_title="星河银行 RAG 教室", page_icon="🏦", layout="wide")
+    st.set_page_config(page_title="RAG 教室", page_icon="🏦", layout="wide")
     _inject_css()
     _load_secrets()
     _init_state()
+    _apply_query_params()
+    apply_tenant(st.session_state.tenant)
+    config.AUDIENCE = st.session_state.audience
     _persist_query()
     _ensure_index_ready()
 
+    profile = current()
     n_chunks = (st.session_state.index_stats or {}).get("chunks")
     llm_name = "Agnes" if config.AGNES_API_KEY else ("OpenAI" if config.OPENAI_API_KEY else ("Groq" if config.GROQ_API_KEY else "未接入（抽取原文）"))
-    st.title("星河银行 RAG 教室")
-    st.caption("建议按「下一步」慢慢走。检索仓库会在第一次打开时自动建好，你不用先添加资料。")
+    st.title(f"{profile['icon']} {profile['title']}")
+    st.caption(profile["caption"] + " 建议按「下一步」走。第一次打开会显示「唤醒中」并预热索引。")
+    if st.session_state.get("from_tugang"):
+        st.info("途港课件「打开 RAG 教室」已带入预设问题。这是教室链接，不是生产系统。")
+    _tenant_bar()
     if n_chunks:
         st.success(
-            f"检索仓库：{n_chunks} 个 chunk。生成器：{llm_name}。"
-            "索引只是把手册存成可搜索片段；大模型只在最后一步根据检索资料写答案。"
+            f"检索仓库：{n_chunks} 个 chunk · 允许集：{config.AUDIENCE}。"
+            f"生成器：{llm_name}。"
         )
     _pipeline_nav()
     st.progress((st.session_state.step + 1) / len(STEPS), text=f"第 {st.session_state.step + 1} / {len(STEPS)} 步 · {STEPS[st.session_state.step][1]}")
@@ -118,6 +119,9 @@ def _init_state() -> None:
         "extra_note": "",
         "index_ready": False,
         "uploads_pending_index": False,
+        "tenant": config.TENANT if config.TENANT in {"bank", "minxin"} else "bank",
+        "audience": "public" if config.AUDIENCE != "internal" else "internal",
+        "from_tugang": False,
     }
     for key, value in defaults.items():
         st.session_state.setdefault(key, value)
@@ -205,14 +209,72 @@ def _ensure_uploads_indexed() -> None:
         _rebuild_index()
 
 
+def _apply_query_params() -> None:
+    try:
+        qp = dict(st.query_params)
+    except Exception:
+        return
+    parsed = parse_launch_params(qp)
+    if parsed.get("from_tugang"):
+        st.session_state.from_tugang = True
+        if parsed.get("step") is not None:
+            st.session_state.step = parsed["step"]
+    tenant = parsed.get("tenant")
+    if tenant in {"bank", "minxin"}:
+        if st.session_state.get("tenant") != tenant:
+            st.session_state.index_ready = False
+            _forget_hits()
+        st.session_state.tenant = tenant
+    question = parsed.get("question")
+    if question:
+        st.session_state.user_query = question
+        st.session_state.query_box = question
+
+
+def _tenant_bar() -> None:
+    left, right = st.columns(2)
+    with left:
+        picked = st.radio(
+            "叙事",
+            ["bank", "minxin"],
+            index=0 if st.session_state.tenant != "minxin" else 1,
+            horizontal=True,
+            format_func=lambda x: "星河银行（教学虚构）" if x == "bank" else "闽信保险（官网材料）",
+        )
+    with right:
+        audience = st.radio(
+            "检索允许集",
+            ["public", "internal"],
+            index=0 if st.session_state.audience != "internal" else 1,
+            horizontal=True,
+            format_func=lambda x: "对客" if x == "public" else "对内（含偿付/已废止稿）",
+        )
+    if picked != st.session_state.tenant:
+        st.session_state.tenant = picked
+        st.session_state.index_ready = False
+        st.session_state.uploads_pending_index = False
+        _forget_hits()
+        apply_tenant(picked)
+        st.rerun()
+    if audience != st.session_state.audience:
+        st.session_state.audience = audience
+        config.AUDIENCE = audience
+        _forget_hits()
+        st.rerun()
+
+
 def _ensure_index_ready() -> None:
     if st.session_state.get("index_ready"):
         return
-    with st.spinner("正在把星河银行手册写入检索仓库（只需几秒）。这是自动的，不用你添加内容。"):
-        st.session_state.index_stats = ensure_index(
+    with st.status("唤醒中：正在预热检索仓库，避免休眠后只剩转圈。", expanded=True) as status:
+        status.write("检查向量库；若为空则按当前切块写入。")
+        stats = warmup_index(
             chunk_size=st.session_state.chunk_size,
             chunk_overlap=st.session_state.chunk_overlap,
         )
+        status.write(f"已就绪 {stats.get('chunks')} 个 chunk · 后端 {stats.get('embedding_backend')}。")
+        status.update(label="检索仓库已唤醒", state="complete")
+    st.session_state.index_stats = stats
     st.session_state.index_ready = True
 
 
@@ -237,9 +299,16 @@ def _teach(do_what: str, why: str, click_what: str) -> None:
 
 
 def _step_intro() -> None:
+    profile = current()
+    if profile["id"] == "minxin":
+        do_what = "大模型并不记得闽信官网或年报。牌照、港车北上、已审计保险收入都不在参数里，不问知识库就会编保费。"
+        why = "闽信叙事用官网+年报摘录，不是核保系统。对客允许集进不了对内偿付稿；过期快报不得当答案。"
+    else:
+        do_what = "大模型把世界记在参数里，但星河银行的利率、还款规则并不在里面。它不知道，就可能编。"
+        why = "RAG 不是另一种聊天模型，而是先「查手册再回答」。查得到的段落，后面才能写进答案；查不到，就应该说资料没有。"
     _teach(
-        "大模型把世界记在参数里，但星河银行的利率、还款规则并不在里面。它不知道，就可能编。",
-        "RAG 不是另一种聊天模型，而是先「查手册再回答」。查得到的段落，后面才能写进答案；查不到，就应该说资料没有。",
+        do_what,
+        why,
         "不要一次跳到检索。用底部「下一步」从知识库走到生成。顶部步骤条只是地图。",
     )
     st.markdown(
@@ -262,14 +331,14 @@ def _step_intro() -> None:
 
 | | 本教室 | 生产常见做法 |
 | --- | --- | --- |
-| 文档 | md / 文本 PDF / docx | 再加扫描件 OCR、权限、版本 |
-| 向量化 | 默认 **bge-small-zh**；哈希是教学开关 | 句向量 / 商业 Embedding |
-| 存储 | **Chroma** 本地目录（就是向量库） | pgvector、Milvus、Pinecone 等 |
-| 重排 | 默认 **bge-reranker**（top-16→top-4）；词重叠是对照开关 | 更大 Cross-Encoder |
-| 生成 | Agnes 等 LLM + 检索上下文 | 同样，但有评测、缓存、审计 |
+| 文档 | md / 文本 PDF / docx，带对客·对内·生效日 | 权限、版本、扫描件 OCR |
+| 允许集 | 演示级 ACL：对客检索进不了对内稿 | 真实 IAM / 文档密级 |
+| 生成 | Agnes 等 LLM + 检索上下文 | 评测、缓存、审计 |
 | 后处理 | 补引用、空检索拒答、冲突稿后置 | 忠实度检查、敏感信息过滤 |
+| 审计 | 每问可导出 JSON（问题 / chunk id / 模型 / 拒答） | 完整作业日志 |
+| 冷启动 | 首页「唤醒中」预热索引 | 常驻服务 / 预热探针 |
 
-教室仍对照「教学 vs 生产」。知识库故意放了营销页和过期 PDF（活期 1.50%、提前还款免违约金），用来演示以哪份为准。
+教室仍对照「教学 vs 生产」。顶部可切换星河银行或闽信保险（官网+年报摘录）。途港 `/learn/banking-ai` 可用 `?from=tugang&lesson=banking-ai&preset=nim`（净息差）或 `preset=demand`（活期利率）打开。
 """
     )
     _eval_panel()
@@ -299,7 +368,9 @@ def _step_load() -> None:
         src = Path(str(doc.metadata.get("source", ""))).name
         ft = doc.metadata.get("file_type", "?")
         page = doc.metadata.get("page", "")
-        labels.append(f"{src}  [{ft} · 第{page}页]")
+        labels.append(
+            f"{src}  [{ft} · {doc.metadata.get('audience_label') or '—'} · {doc.metadata.get('effective_date') or '无生效日'} · 第{page}页]"
+        )
     left, right = st.columns((1, 2))
     with left:
         picked = st.radio("点一篇打开", labels, index=0)
@@ -457,10 +528,9 @@ def _step_index() -> None:
     )
     if use_hash:
         config.EMBEDDING_BACKEND = "hashed"
-        config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
     else:
         config.EMBEDDING_BACKEND = "huggingface"
-        config.COLLECTION_NAME = f"bank_kb_{config.EMBEDDING_BACKEND}"
+    config.COLLECTION_NAME = f"{current()['id']}_kb_{config.EMBEDDING_BACKEND}"
     last_backend = (st.session_state.index_stats or {}).get("embedding_backend")
     if last_backend and last_backend != config.EMBEDDING_BACKEND:
         st.warning(
@@ -590,8 +660,9 @@ def _step_question() -> None:
         st.session_state.step = 5
         st.rerun()
     st.caption("点这些会填进上面的输入框，并跳到检索：")
-    cols = st.columns(len(SAMPLE_QUESTIONS))
-    for i, sample in enumerate(SAMPLE_QUESTIONS):
+    samples = current()["samples"]
+    cols = st.columns(len(samples))
+    for i, sample in enumerate(samples):
         with cols[i]:
             st.button(
                 sample,
@@ -780,6 +851,7 @@ def _step_rerank() -> None:
         mode=st.session_state.reranker_mode,
     )
     kept = keep_live_demand_rate(question, ranked, kept)
+    kept = keep_audited_premium(question, ranked, kept)
     from rag.rerank import LAST_ERROR as RERANK_ERROR
 
     if RERANK_ERROR:
@@ -848,6 +920,7 @@ def _step_generate() -> None:
                 mode=st.session_state.reranker_mode,
             )
             ranked = keep_live_demand_rate(question, recalled, ranked)
+            ranked = keep_audited_premium(question, recalled, ranked)
             st.session_state["reranked"] = ranked
             st.session_state["reranked_query"] = question
         except Exception as exc:
@@ -880,6 +953,20 @@ def _step_generate() -> None:
     final, notes = postprocess_answer(raw, question, docs)
     t_gen2 = perf_counter()
     clips = cited_clips(final, docs, question)
+    from rag.audit import append_event
+    from rag.acl import chunk_id as make_id
+
+    append_event(
+        {
+            "question": question,
+            "chunk_ids": [make_id(d) for d in docs],
+            "sources": [Path(str(d.metadata.get("source", ""))).name for d in docs],
+            "model": name,
+            "refused": is_refusal(final),
+            "answer": final,
+            "notes": notes,
+        }
+    )
     stats = st.session_state.get("index_stats") or {}
     timings = {
         "embed": stats.get("embed_ms"),
@@ -927,6 +1014,17 @@ def _render_result_card(
             st.markdown(_clip_html(clip), unsafe_allow_html=True)
     else:
         st.info("空检索或明确拒答：不展示原文，避免把无关段落当成依据。")
+    event = last_event()
+    if event:
+        st.markdown("##### 审计日志")
+        st.caption("问题 · chunk id · 模型 · 是否拒答。演示级，可导出一条 JSON。")
+        st.json(event)
+        st.download_button(
+            "导出本条审计 JSON",
+            data=export_json(event=event),
+            file_name=f"rag-audit-{event.get('id', 'last')[:8]}.json",
+            mime="application/json",
+        )
     with st.expander("发给模型的 Prompt（生成前）"):
         st.code(preview_prompt(question, docs), language="markdown")
     with st.expander("后处理做了什么"):
@@ -948,7 +1046,11 @@ def _render_result_card(
 
 def _eval_panel() -> None:
     st.markdown("#### 一键跑评测")
-    st.caption("固定 20 题：能答 / 应拒答 / 活期与定期易混 / 跨文档 / 改写 / 过期利率冲突。截图即可贴作品集。")
+    n_core = len([i for i in load_eval_items() if "::" not in str(i.get("id"))])
+    if current()["id"] == "minxin":
+        st.caption(f"闽信评测 {n_core} 题：成立年 / AM Best / 港车北上 / 已审计保险收入 / 应拒答净息差。对客跑分时对内稿不进允许集。")
+    else:
+        st.caption(f"星河评测 {n_core} 题：能答 / 应拒答 / 易混 / 跨文档 / 改写 / 过期利率冲突。截图即可贴作品集。")
     if st.button("跑评测", type="primary"):
         with st.spinner("正在按评测集逐题检索并打分…"):
             try:

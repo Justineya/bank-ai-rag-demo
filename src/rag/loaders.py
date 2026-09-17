@@ -27,23 +27,25 @@ SUPPORTED_SUFFIXES = {
 
 def load_path(path: Path) -> list[Document]:
     suffix = path.suffix.lower()
+    docs: list[Document] = []
     if suffix in {".md", ".txt"}:
         text = _read_text_file(path).strip()
-        if not text:
-            return []
-        return [
-            Document(
-                page_content=text,
-                metadata={"source": str(path), "file_type": suffix.lstrip("."), "page": 1},
-            )
-        ]
-    if suffix == ".pdf":
-        return _load_pdf(path)
-    if suffix == ".docx":
-        return _load_docx(path)
-    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
-        return _load_image(path)
-    return []
+        if text:
+            docs = [
+                Document(
+                    page_content=text,
+                    metadata={"source": str(path), "file_type": suffix.lstrip("."), "page": 1},
+                )
+            ]
+    elif suffix == ".pdf":
+        docs = _load_pdf(path)
+    elif suffix == ".docx":
+        docs = _load_docx(path)
+    elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
+        docs = _load_image(path)
+    from rag.acl import annotate_document
+
+    return [annotate_document(doc) for doc in docs]
 
 
 def _read_text_file(path: Path) -> str:

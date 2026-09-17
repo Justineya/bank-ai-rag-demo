@@ -39,6 +39,21 @@ SYSTEM_PROMPT = """你是星河银行的知识库助手。只能根据给定资�
 回答使用简体中文，并在句末用 (资料N) 标出依据。"""
 
 
+def system_prompt() -> str:
+    try:
+        from rag.tenants import current
+
+        profile = current()
+    except Exception:
+        return SYSTEM_PROMPT
+    return (
+        f"你是{profile['assistant']}。只能根据给定资料回答。"
+        f"如果资料里没有答案，明确说「资料中没有提到」，{profile['domain_hint']}"
+        "若同时出现已废止稿和现行/已审计文件，对客必须以生效口径为准。"
+        "回答使用简体中文，并在句末用 (资料N) 标出依据。"
+    )
+
+
 class Generator(Protocol):
     def generate(self, question: str, docs: list[Document]) -> str: ...
 
@@ -75,7 +90,7 @@ class ChatModelGenerator:
     def generate(self, question: str, docs: list[Document]) -> str:
         context = format_context(prefer_effective_docs(docs))
         messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
+            SystemMessage(content=system_prompt()),
             HumanMessage(
                 content=f"资料：\n{context}\n\n问题：{question}\n\n请作答。"
             ),
@@ -151,7 +166,11 @@ def _numeric_atoms(text: str) -> list[str]:
 
 
 def asked_number_missing(question: str, docs: list[Document]) -> bool:
-    rates = re.findall(r"\d+(?:\.\d+)?%", question or "")
+    q = question or ""
+    # 「到底以哪个为准」会点名过期数字；对客允许集里可能没有该稿，仍应按现行口径答。
+    if any(mark in q for mark in ("为准", "冲突", "过期", "到底哪个")):
+        return False
+    rates = re.findall(r"\d+(?:\.\d+)?%", q)
     if not rates:
         return False
     blob = "\n".join(d.page_content for d in docs)
@@ -275,7 +294,7 @@ def _is_refusal(text: str) -> bool:
 def preview_prompt(question: str, docs: list[Document]) -> str:
     context = format_context(docs)
     return (
-        f"{SYSTEM_PROMPT}\n\n"
+        f"{system_prompt()}\n\n"
         f"资料：\n{context}\n\n"
         f"问题：{question}\n\n"
         "请作答。"
@@ -323,6 +342,10 @@ def _pick_doc(question: str, docs: list[Document]) -> Document:
         (("随心贷", "炒股", "消费贷"), ("随心贷", "不可用于")),
         (("通知存款", "起存"), ("通知存款", "起存")),
         (("加点", "LPR"), ("55BP", "+55")),
+        (("保险收入", "19,727"), ("19,663", "已审计")),
+        (("AM Best", "贝氏", "评级"), ("B++", "bbb+")),
+        (("港车北上", "澳车北上", "港珠澳"), ("港车北上", "澳车北上", "港珠澳大桥")),
+        (("成立", "哪一年"), ("1974",)),
         (("活期",), ("活期年利率",)),
         (("一年期定期", "存一年"), ("1 年期",)),
     )
@@ -343,7 +366,10 @@ def _pick_sentence(question: str, sentences: list[str]) -> str:
         (("挂失", "卡丢", "电话"), ("400", "挂失")),
         (("加点", "LPR", "住房按揭演示"), ("55", "加点")),
         (("起存", "通知存款"), ("起存",)),
-        (("一年期定期", "存一年", "1 年期"), ("1 年期",)),
+        (("保险收入",), ("19,663", "保险收入")),
+        (("AM Best", "贝氏", "评级"), ("B++",)),
+        (("港车北上", "澳车北上"), ("港车北上", "澳车北上")),
+        (("成立", "哪一年"), ("1974",)),
         (("随心贷", "炒股", "消费贷"), ("不可用于", "股市", "炒股")),
         (("积分",), ("20 元", "积 1 分")),
         (("二类", "II 类", "II类"), ("1 万", "二类")),

@@ -17,6 +17,8 @@ from rag.generate import (
     postprocess_answer,
     prefer_effective_docs,
 )
+from rag.acl import chunk_id, filter_docs
+from rag.audit import append_event
 from rag.rerank import rerank_hits
 from rag.retrieve import retrieve_ranked
 
@@ -33,6 +35,10 @@ class RAGAnswer:
     timings_ms: dict = field(default_factory=dict)
     refused: bool = False
     rerank_backend: str = ""
+    chunk_ids: list[str] = field(default_factory=list)
+    audience: str = ""
+    tenant: str = ""
+    audit: dict = field(default_factory=dict)
 
 
 def ask(
@@ -50,8 +56,9 @@ def ask(
     t1 = perf_counter()
     kept = rerank_hits(question, recalled, keep=top_k, mode=reranker)
     kept = keep_live_demand_rate(question, recalled, kept)
+    kept = keep_audited_premium(question, recalled, kept)
     t2 = perf_counter()
-    docs = prefer_effective_docs([item["doc"] for item in kept])
+    docs = prefer_effective_docs(filter_docs([item["doc"] for item in kept]))
     gen, name = (generator, "custom") if generator else build_generator()
     raw = gen.generate(question, docs)
     t3 = perf_counter()
@@ -59,6 +66,21 @@ def ask(
     t4 = perf_counter()
     clips = cited_clips(answer, docs, question)
     backend = (kept[0].get("rerank_backend") if kept else "") or (reranker or config.RERANKER)
+    ids = [chunk_id(doc) for doc in docs]
+    sources = [str(doc.metadata.get("source", "")).rsplit("/", 1)[-1] for doc in docs]
+    audit = append_event(
+        {
+            "question": question,
+            "chunk_ids": ids,
+            "sources": sources,
+            "model": name,
+            "refused": is_refusal(answer),
+            "answer": answer,
+            "notes": notes,
+            "tenant": getattr(config, "TENANT", "bank"),
+            "audience": getattr(config, "AUDIENCE", "public"),
+        }
+    )
     return RAGAnswer(
         question=question,
         answer=answer,
@@ -75,6 +97,10 @@ def ask(
         },
         refused=is_refusal(answer),
         rerank_backend=str(backend),
+        chunk_ids=ids,
+        audience=str(getattr(config, "AUDIENCE", "")),
+        tenant=str(getattr(config, "TENANT", "")),
+        audit=audit,
     )
 
 
@@ -97,3 +123,22 @@ def keep_live_demand_rate(question: str, recalled: list[dict], kept: list[dict])
     if dropped:
         mixed = mixed[: max(len(kept) - 1, 1)] + dropped[:1]
     return mixed[: len(kept) or 1]
+
+
+def keep_audited_premium(question: str, recalled: list[dict], kept: list[dict]) -> list[dict]:
+    """官网约数 19,727 万 vs 年报 19,663 万：对客保留已审计段落。"""
+    q = question or ""
+    if "保险收入" not in q and "19,727" not in q:
+        return kept
+
+    def audited(hit: dict) -> bool:
+        text = hit["doc"].page_content
+        return "19,663" in text and not is_expired_doc(hit["doc"])
+
+    if any(audited(hit) for hit in kept):
+        return kept
+    replacement = next((hit for hit in recalled if audited(hit)), None)
+    if replacement is None:
+        return kept
+    rest = [hit for hit in kept if "3 亿" not in hit["doc"].page_content]
+    return ([replacement] + rest)[: max(len(kept), 1)]

@@ -11,15 +11,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 from rag.eval import run_eval
 from rag.ingest import build_index
 from rag.pipeline import ask
+from rag.tenants import apply_tenant
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="星河银行 RAG Demo")
+    parser = argparse.ArgumentParser(description="RAG 教室（星河银行 / 闽信保险）")
     parser.add_argument("question", nargs="?", help="要问知识库的问题")
     parser.add_argument("--rebuild", action="store_true", help="重建向量索引")
     parser.add_argument("--k", type=int, default=None, help="检索条数")
     parser.add_argument("--eval", action="store_true", help="跑固定评测集并打印命中/拒答/引用率")
+    parser.add_argument("--tenant", choices=["bank", "minxin"], default=None, help="叙事：bank 星河 / minxin 闽信")
     args = parser.parse_args()
+    if args.tenant:
+        apply_tenant(args.tenant)
 
     if args.eval:
         if args.rebuild:

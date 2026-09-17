@@ -11,6 +11,7 @@ from pathlib import Path
 from langchain_core.documents import Document
 
 from rag import config
+from rag.acl import filter_docs, is_allowed
 from rag.ingest import get_vectorstore
 from rag.textutil import BM25Index, lexical_overlap, tokenize
 
@@ -18,10 +19,12 @@ from rag.textutil import BM25Index, lexical_overlap, tokenize
 def _all_docs() -> list[Document]:
     store = get_vectorstore(reset=False)
     raw = store.get(include=["documents", "metadatas"])
-    return [
-        Document(page_content=text, metadata=meta or {})
-        for text, meta in zip(raw.get("documents") or [], raw.get("metadatas") or [])
-    ]
+    return filter_docs(
+        [
+            Document(page_content=text, metadata=meta or {})
+            for text, meta in zip(raw.get("documents") or [], raw.get("metadatas") or [])
+        ]
+    )
 
 
 def retrieve_ranked(
@@ -53,6 +56,8 @@ def _vector_ranked(question: str, recall_k: int) -> list[dict]:
         pairs = [(doc, 0.0) for doc in store.similarity_search(question, k=recall_k)]
     ranked = []
     for doc, dist in pairs:
+        if not is_allowed(doc):
+            continue
         terms = set(tokenize(question)) & set(tokenize(doc.page_content))
         ranked.append(
             {

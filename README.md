@@ -65,9 +65,44 @@ src/rag/          流水线源码，一文件一层
   generate.py     生成 + 后处理 + 结果卡字段
   eval.py         一键跑分
   pipeline.py     ask() 入口
-cli.py            命令行
+  tenants.py      星河 / 闽信叙事
+  acl.py          对客·对内·生效日
+  audit.py        会话审计 JSON
+  warmup.py       冷启动预热
+cli.py            命令行（`--tenant minxin`）
 app.py            Streamlit 讲解式教室
 tests/            不依赖外网模型的回归测试
+```
+
+## 闽信保险叙事（P2）
+
+星河银行仍是虚构制度稿。闽信保险教室用官网公开材料：
+
+- 来源表：`data/minxin/SOURCES.md`
+- 摘录：`data/minxin/kb/`（YAML 头：`audience` 对客/对内、`effective_date`、`status`）
+- 官网 HTML 与 2025 年报 PDF 备份：`data/minxin/source/`
+- 财务数字只引用官网/年报原文。官网保险收入约 **19,727 万** 与年报已审计 **19,663 万** 并存时，对客以年报为准。教学用「约 3 亿」快报标成已废止，不是官网文件。
+
+顶部切换叙事。检索允许集默认**对客**：对内偿付/再保摘录与已废止稿不进召回。切到「对内」才能看到那部分。
+
+生成页可导出一条审计 JSON：问题、命中 chunk id、模型、是否拒答。
+
+第一次打开出现 **唤醒中**，会预热索引，避免 Streamlit 休眠后只剩转圈。
+
+途港课件 `/learn/banking-ai` 可带查询参数打开教室，例如：
+
+```
+?from=tugang&lesson=banking-ai&preset=nim
+?from=tugang&lesson=banking-ai&preset=demand
+?tenant=minxin&preset=northbound
+```
+
+命令行：
+
+```bash
+python cli.py --tenant minxin --rebuild
+python cli.py --tenant minxin "闽信保险是哪一年成立的？"
+python cli.py --tenant minxin --eval
 ```
 
 ## 快速开始

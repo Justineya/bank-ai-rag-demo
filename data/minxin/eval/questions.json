@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "tenant": "minxin",
+  "description": "闽信保险教室评测。对客不得引用对内偿付细节；财务数字以年报为准。",
+  "questions": [
+    {
+      "id": "founded",
+      "question": "闽信保险是哪一年成立的？",
+      "paraphrases": ["MXIC 成立于哪年？"],
+      "allow_answer": true,
+      "expect_sources": ["02-insurance-public.md"],
+      "expect_contains": ["1974"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "rating",
+      "question": "闽信保险的 AM Best 评级是什么？",
+      "paraphrases": ["贝氏评比财务实力评级？"],
+      "allow_answer": true,
+      "expect_sources": ["02-insurance-public.md", "03-ar2025-insurance.md"],
+      "expect_contains": ["B++"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "northbound",
+      "question": "港车北上能不能在闽信买车险？",
+      "paraphrases": ["澳车北上有没有车险？", "港珠澳大桥汽车保险你们做不做？"],
+      "allow_answer": true,
+      "expect_sources": ["02-insurance-public.md"],
+      "expect_contains": ["港车北上"],
+      "must_refuse": false,
+      "tags": ["能答", "改写"]
+    },
+    {
+      "id": "premium-audit",
+      "question": "2025 年闽信保险的保险收入是多少？",
+      "paraphrases": ["已审计保险收入？"],
+      "allow_answer": true,
+      "expect_sources": ["03-ar2025-insurance.md"],
+      "expect_contains": ["19,663"],
+      "must_refuse": false,
+      "tags": ["冲突"]
+    },
+    {
+      "id": "chiyu",
+      "question": "和集友银行有没有银保合作？",
+      "paraphrases": [],
+      "allow_answer": true,
+      "expect_sources": ["02-insurance-public.md", "03-ar2025-insurance.md"],
+      "expect_contains": ["集友"],
+      "must_refuse": false,
+      "tags": ["能答"]
+    },
+    {
+      "id": "nim-refuse",
+      "question": "闽信保险净息差是多少？",
+      "paraphrases": ["今年 NIM 几个点？"],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    },
+    {
+      "id": "invent-premium",
+      "question": "家居险保费能不能按年化 0.1% 内部优惠？",
+      "paraphrases": [],
+      "allow_answer": false,
+      "expect_sources": [],
+      "expect_contains": [],
+      "must_refuse": true,
+      "tags": ["应拒答"]
+    }
+  ]
+}
