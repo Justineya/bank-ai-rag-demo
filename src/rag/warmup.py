@@ -8,7 +8,13 @@ from rag.tenants import current
 
 
 def warmup_index(chunk_size: int | None = None, chunk_overlap: int | None = None) -> dict:
-    stats = ensure_index(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    from rag.ingest import reset_persist_dir
+
+    try:
+        stats = ensure_index(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    except Exception:
+        reset_persist_dir()
+        stats = ensure_index(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     probe = (current().get("samples") or ["唤醒"])[0]
     try:
         retrieve_ranked(probe, k=2, fetch_k=4)

@@ -185,7 +185,9 @@ python scripts/export_office_docs.py
 1. 把 PR 合并进 `main`，或在 Cloud 里选分支 `cursor/rag-from-scratch-demo-f62d`
 2. 打开 https://share.streamlit.io → New app → 选 `Justineya/bank-ai-rag-demo`
 3. Main file 填 `app.py`
-4. 要用 Agnes 大模型：App → **Settings → Secrets** 填入（不要提交到 Git）
+4. **Advanced settings → Python version 选 3.12**（仓库有 `runtime.txt`）。3.14 上 Chroma 容易在 `get_tenant` 炸掉。  
+   向量库会写到 `/tmp/rag_chroma`，不写只读的 `/mount/src`。首页「唤醒中」若遇到损坏 sqlite 会清空重建，不再把整页打成红字。
+5. 要用 Agnes 大模型：App → **Settings → Secrets** 填入（不要提交到 Git）
 
 ```toml
 AGNES_API_KEY = "你的密钥"

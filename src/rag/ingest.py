@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 from langchain_chroma import Chroma
@@ -104,22 +105,92 @@ def _shared_prefix_from_prev(prev: str, curr: str) -> str:
     return ""
 
 
-def get_vectorstore(reset: bool = False) -> Chroma:
-    embeddings = build_embeddings()
-    config.CHROMA_DIR.mkdir(parents=True, exist_ok=True)
-    store = Chroma(
+def _is_chroma_open_error(exc: BaseException | None) -> bool:
+    if exc is None:
+        return False
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if name in {"OperationalError", "DatabaseError"}:
+        return True
+    if any(
+        token in msg
+        for token in (
+            "could not connect to tenant",
+            "are you sure it exists",
+            "file is not a database",
+            "no such table",
+            "readonly database",
+            "unable to open database",
+        )
+    ):
+        return True
+    return _is_chroma_open_error(exc.__cause__) or _is_chroma_open_error(exc.__context__)
+
+
+def _clear_chroma_cache() -> None:
+    """同一 persist 路径会复用坏掉的 System；删 sqlite 前必须清缓存。"""
+    try:
+        from chromadb.api.shared_system_client import SharedSystemClient
+    except ImportError:
+        return
+    for system in list(getattr(SharedSystemClient, "_identifier_to_system", {}).values()):
+        try:
+            system.stop()
+        except Exception:
+            pass
+    SharedSystemClient.clear_system_cache()
+
+
+def reset_persist_dir(path: Path | None = None) -> Path:
+    folder = Path(path or config.CHROMA_DIR)
+    _clear_chroma_cache()
+    shutil.rmtree(folder, ignore_errors=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    config.CHROMA_DIR = folder
+    return folder
+
+
+def _chroma_client(persist: Path):
+    """必须用 PersistentClient。langchain 默认 chromadb.Client 在 Cloud 上会卡在 get_tenant。"""
+    import chromadb
+    from chromadb.config import Settings
+
+    persist.mkdir(parents=True, exist_ok=True)
+    return chromadb.PersistentClient(
+        path=str(persist),
+        settings=Settings(anonymized_telemetry=False, allow_reset=True),
+    )
+
+
+def _open_chroma(embeddings, persist: Path) -> Chroma:
+    return Chroma(
         collection_name=config.COLLECTION_NAME,
         embedding_function=embeddings,
-        persist_directory=str(config.CHROMA_DIR),
+        persist_directory=str(persist),
+        client=_chroma_client(persist),
     )
+
+
+def get_vectorstore(reset: bool = False) -> Chroma:
+    embeddings = build_embeddings()
+    persist = Path(config.CHROMA_DIR)
+    persist.mkdir(parents=True, exist_ok=True)
     if reset:
-        store.delete_collection()
-        store = Chroma(
-            collection_name=config.COLLECTION_NAME,
-            embedding_function=embeddings,
-            persist_directory=str(config.CHROMA_DIR),
-        )
-    return store
+        try:
+            store = _open_chroma(embeddings, persist)
+            store.delete_collection()
+        except Exception as exc:
+            if not _is_chroma_open_error(exc):
+                raise
+            persist = reset_persist_dir(persist)
+        return _open_chroma(embeddings, persist)
+    try:
+        return _open_chroma(embeddings, persist)
+    except Exception as exc:
+        if not _is_chroma_open_error(exc):
+            raise
+        persist = reset_persist_dir(persist)
+        return _open_chroma(embeddings, persist)
 
 
 def build_index(
@@ -152,9 +223,14 @@ def build_index(
 
 
 def count_indexed() -> int:
-    store = get_vectorstore(reset=False)
-    raw = store.get(include=["documents"])
-    return len(raw.get("documents") or [])
+    try:
+        store = get_vectorstore(reset=False)
+        raw = store.get(include=["documents"])
+        return len(raw.get("documents") or [])
+    except Exception as exc:
+        if _is_chroma_open_error(exc):
+            return 0
+        raise
 
 
 def ensure_index(
@@ -162,7 +238,13 @@ def ensure_index(
     chunk_overlap: int | None = None,
 ) -> dict:
     """仓库空时才建。用户不必先「添加」任何资料。"""
-    n = count_indexed()
+    try:
+        n = count_indexed()
+    except Exception as exc:
+        if not _is_chroma_open_error(exc):
+            raise
+        reset_persist_dir()
+        n = 0
     if n > 0:
         return {
             "documents": len(load_documents()),
@@ -173,7 +255,13 @@ def ensure_index(
             "vector_store": "chroma",
             "rebuilt": False,
         }
-    stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    try:
+        stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    except Exception as exc:
+        if not _is_chroma_open_error(exc):
+            raise
+        reset_persist_dir()
+        stats = build_index(reset=True, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
     stats["rebuilt"] = True
     return stats
 

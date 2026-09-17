@@ -14,7 +14,36 @@ os.environ.setdefault("CHROMA_TELEMETRY", "False")
 ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = Path(os.getenv("RAG_DATA_DIR", ROOT / "data" / "kb"))
 UPLOAD_DIR = Path(os.getenv("RAG_UPLOAD_DIR", DATA_DIR / "uploads"))
-CHROMA_DIR = Path(os.getenv("RAG_CHROMA_DIR", ROOT / "chroma_db"))
+
+
+def on_streamlit_cloud() -> bool:
+    """Community Cloud 把代码挂在 /mount/src，仓库目录不适合当 sqlite 落盘。"""
+    return Path("/mount/src").exists() or bool(os.getenv("STREAMLIT_SHARING_MODE"))
+
+
+def _dir_is_writable(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def resolve_chroma_dir() -> Path:
+    env = os.getenv("RAG_CHROMA_DIR")
+    if env:
+        return Path(env)
+    fallback = Path(os.getenv("TMPDIR") or "/tmp") / "rag_chroma"
+    if on_streamlit_cloud():
+        return fallback
+    local = ROOT / "chroma_db"
+    return local if _dir_is_writable(local) else fallback
+
+
+CHROMA_DIR = resolve_chroma_dir()
 EVAL_PATH = Path(os.getenv("RAG_EVAL_PATH", ROOT / "data" / "eval" / "questions.json"))
 
 CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "400"))
@@ -50,7 +79,7 @@ def reload() -> None:
     global AGNES_API_KEY, AGNES_BASE_URL, AGNES_MODEL
     global EMBEDDING_BACKEND, COLLECTION_NAME, HF_EMBEDDING_MODEL
     global RETRIEVER, RERANKER, RERANKER_MODEL, TOP_K, FETCH_K
-    global TENANT, AUDIENCE
+    global TENANT, AUDIENCE, CHROMA_DIR
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
@@ -68,3 +97,4 @@ def reload() -> None:
     FETCH_K = int(os.getenv("RAG_FETCH_K", "16"))
     TENANT = os.getenv("RAG_TENANT", "bank").lower()
     AUDIENCE = os.getenv("RAG_AUDIENCE", "public").lower()
+    CHROMA_DIR = resolve_chroma_dir()

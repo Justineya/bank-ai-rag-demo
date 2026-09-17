@@ -268,11 +268,34 @@ def _ensure_index_ready() -> None:
         return
     with st.status("唤醒中：正在预热检索仓库，避免休眠后只剩转圈。", expanded=True) as status:
         status.write("检查向量库；若为空则按当前切块写入。")
-        stats = warmup_index(
-            chunk_size=st.session_state.chunk_size,
-            chunk_overlap=st.session_state.chunk_overlap,
+        try:
+            stats = warmup_index(
+                chunk_size=st.session_state.chunk_size,
+                chunk_overlap=st.session_state.chunk_overlap,
+            )
+        except Exception as exc:
+            status.write("向量库打不开（Cloud 上常见损坏的 sqlite / 只读盘）。正在清空后重建…")
+            from rag.ingest import reset_persist_dir
+
+            reset_persist_dir()
+            try:
+                stats = warmup_index(
+                    chunk_size=st.session_state.chunk_size,
+                    chunk_overlap=st.session_state.chunk_overlap,
+                )
+            except Exception:
+                status.update(label="检索仓库唤醒失败", state="error")
+                st.error(
+                    "Chroma 在此环境无法打开。Streamlit Cloud 请在 Advanced settings 使用 Python 3.12，"
+                    "并确认应用对 /tmp 可写。详情："
+                    f"{type(exc).__name__}"
+                )
+                st.session_state.index_ready = False
+                return
+        status.write(
+            f"已就绪 {stats.get('chunks')} 个 chunk · 后端 {stats.get('embedding_backend')} · "
+            f"目录 `{stats.get('persist_directory')}`。"
         )
-        status.write(f"已就绪 {stats.get('chunks')} 个 chunk · 后端 {stats.get('embedding_backend')}。")
         status.update(label="检索仓库已唤醒", state="complete")
     st.session_state.index_stats = stats
     st.session_state.index_ready = True

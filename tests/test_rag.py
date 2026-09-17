@@ -443,3 +443,32 @@ def test_rerank_mode_passthrough_keeps_order():
     kept = rerank_hits("活期", [a, b], keep=2, mode="none")
     assert kept[0]["doc"].page_content.startswith("A")
     assert kept[0]["rerank_backend"] == "none"
+
+
+def test_chroma_dir_falls_back_on_streamlit_cloud(monkeypatch, tmp_path):
+    monkeypatch.delenv("RAG_CHROMA_DIR", raising=False)
+    monkeypatch.setenv("STREAMLIT_SHARING_MODE", "1")
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    from rag.config import resolve_chroma_dir
+
+    assert resolve_chroma_dir() == tmp_path / "rag_chroma"
+
+
+def test_corrupt_chroma_sqlite_is_rebuilt(tmp_path, monkeypatch):
+    persist = tmp_path / "chroma_corrupt"
+    persist.mkdir()
+    (persist / "chroma.sqlite3").write_bytes(b"not a sqlite database")
+    monkeypatch.setenv("RAG_CHROMA_DIR", str(persist))
+    monkeypatch.setenv("EMBEDDING_BACKEND", "hashed")
+    from rag import config
+    from rag.ingest import ensure_index, get_vectorstore
+    from rag.tenants import apply_tenant
+
+    config.CHROMA_DIR = persist
+    config.EMBEDDING_BACKEND = "hashed"
+    apply_tenant("bank")
+    store = get_vectorstore(reset=False)
+    assert store is not None
+    stats = ensure_index()
+    assert stats["chunks"] > 0
+    assert stats["rebuilt"] is True
