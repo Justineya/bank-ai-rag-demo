@@ -28,3 +28,12 @@ npm run dev
 ```
 
 浏览器打开 http://localhost:5173
+
+## 部署（Vercel）
+
+仓库根目录是 RAG 教室，本应用在 `hiagent/`：
+
+- Root Directory：`hiagent`
+- Framework：Vite
+- Build：`npm run build`
+- Output：`dist`
